@@ -4,7 +4,7 @@ The 8 tools that record an analyst's annotations in the program (comments, funct
 
 ## Status
 
-**OK** — all 27 active specs implemented and covered by tests (2026-10-03). Mapped 2026-10-03 from git SHA `1acf6ba`; implemented on top of it in the working tree.
+**OK** — all 27 active specs implemented and covered by tests (2026-10-03). Mapped 2026-10-03 from git SHA `1acf6ba`; implemented and audited at `7f8909c`.
 
 ## References
 

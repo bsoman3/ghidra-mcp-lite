@@ -4,7 +4,7 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 
 ## Status
 
-**OK** — all 42 active specs implemented and covered by tests (2026-10-03); one item deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; implemented on top of it in the working tree.
+**OK** — all 42 active specs implemented and covered by tests (2026-10-03); one item deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; implemented and audited at `7f8909c`.
 
 ## References
 

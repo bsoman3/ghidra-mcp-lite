@@ -4,7 +4,7 @@ Works out which address, function, symbol, or data type a caller meant from a us
 
 ## Status
 
-**OK** — all 26 active specs implemented and covered by tests (2026-10-03); three items deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; implemented on top of it in the working tree.
+**OK** — all 26 active specs implemented and covered by tests (2026-10-03); three items deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; implemented and audited at `7f8909c`.
 
 ## References
 
