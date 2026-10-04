@@ -51,6 +51,9 @@ def test_readme_states_the_platform_prerequisites():
     assert "Python 3.11" in README and "3.14" in README
     assert "11.1–11.3" not in README
     assert "JDK 17" not in README
+    # Example paths and commands use the supported versions too.
+    assert "ghidra_11." not in README
+    assert "java-17" not in README
 
 
 # @spec SRV-041

@@ -48,7 +48,7 @@ pip install -e ".[ghidrecomp]"
 pyghidra locates Ghidra via the `GHIDRA_INSTALL_DIR` environment variable. Set it to the root of your Ghidra installation — the directory that contains `ghidraRun` and the `Ghidra/` subdirectory:
 
 ```bash
-export GHIDRA_INSTALL_DIR=/opt/ghidra_11.3.2_PUBLIC
+export GHIDRA_INSTALL_DIR=/opt/ghidra_12.1.4_PUBLIC
 ```
 
 You can set this in your shell profile, in the MCP server config's `env` block, or on the command line. The server will fail to start with a clear error if it cannot locate Ghidra.
@@ -56,7 +56,7 @@ You can set this in your shell profile, in the MCP server config's `env` block, 
 If you have multiple JDKs installed and pyghidra picks the wrong one, set `JAVA_HOME` explicitly:
 
 ```bash
-export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ```
 
 ### Loading a Binary and Running Analysis
@@ -93,7 +93,7 @@ ghidra-mcp --analyze-only /path/to/binary   # exits non-zero if any binary faile
 
 ```bash
 # Set Ghidra location
-export GHIDRA_INSTALL_DIR=/opt/ghidra_11.3.2_PUBLIC
+export GHIDRA_INSTALL_DIR=/opt/ghidra_12.1.4_PUBLIC
 
 # Import, analyze, and serve a binary over stdio
 ghidra-mcp /path/to/target_binary
@@ -138,7 +138,7 @@ Config file: `~/.claude/settings.json`
         "/path/to/target_binary"
       ],
       "env": {
-        "GHIDRA_INSTALL_DIR": "/opt/ghidra_11.3.2_PUBLIC"
+        "GHIDRA_INSTALL_DIR": "/opt/ghidra_12.1.4_PUBLIC"
       }
     }
   }
@@ -149,7 +149,7 @@ Config file: `~/.claude/settings.json`
 
 Start the server on the VM:
 ```bash
-GHIDRA_INSTALL_DIR=/opt/ghidra_11.3.2_PUBLIC \
+GHIDRA_INSTALL_DIR=/opt/ghidra_12.1.4_PUBLIC \
 ghidra-mcp --transport streamable-http \
            --host 0.0.0.0 \
            --port 8000 \
@@ -195,7 +195,7 @@ Create or edit `.vscode/mcp.json` in your workspace:
         "/path/to/target_binary"
       ],
       "env": {
-        "GHIDRA_INSTALL_DIR": "/opt/ghidra_11.3.2_PUBLIC"
+        "GHIDRA_INSTALL_DIR": "/opt/ghidra_12.1.4_PUBLIC"
       }
     }
   }
@@ -226,7 +226,7 @@ For a user-level (not workspace) config, add the same block under `"mcp"` in VS 
         "command": "ghidra-mcp",
         "args": ["/path/to/target_binary"],
         "env": {
-          "GHIDRA_INSTALL_DIR": "/opt/ghidra_11.3.2_PUBLIC"
+          "GHIDRA_INSTALL_DIR": "/opt/ghidra_12.1.4_PUBLIC"
         }
       }
     }
@@ -256,7 +256,7 @@ Or configure from the Cline panel: **MCP Servers → Edit MCP Settings**.
         "/path/to/target_binary"
       ],
       "env": {
-        "GHIDRA_INSTALL_DIR": "/opt/ghidra_11.3.2_PUBLIC"
+        "GHIDRA_INSTALL_DIR": "/opt/ghidra_12.1.4_PUBLIC"
       },
       "disabled": false,
       "autoApprove": []
