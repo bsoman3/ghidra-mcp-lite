@@ -20,11 +20,11 @@ arrows:
     parent: null
     sampled: 2026-10-03
     audited: 2026-10-04
-    audited_sha: null
+    audited_sha: 5cc28ab
     blocks: [program-lifecycle]
     blockedBy: []
     detail: analysis-config.md
-    next: "None; all specs implemented and tested. audited_sha to be set at commit"
+    next: "None; all specs implemented and tested."
     drift: null
 
   program-lifecycle:
@@ -32,11 +32,11 @@ arrows:
     parent: null
     sampled: 2026-10-03
     audited: 2026-10-04
-    audited_sha: null
+    audited_sha: 5cc28ab
     blocks: [server]
     blockedBy: [analysis-config]
     detail: program-lifecycle.md
-    next: "None; all specs implemented and tested. audited_sha to be set at commit"
+    next: "None; all specs implemented and tested."
     drift: null
 
   resolution:
@@ -56,11 +56,11 @@ arrows:
     parent: null
     sampled: 2026-10-03
     audited: 2026-10-04
-    audited_sha: null
+    audited_sha: 5cc28ab
     blocks: [server]
     blockedBy: [resolution]
     detail: queries.md
-    next: "Deferred: pagination contract, unbounded outputs, search_symbols shape, full scans (bounded responses goal). audited_sha to be set at commit"
+    next: "Deferred: pagination contract, unbounded outputs, search_symbols shape, full scans (bounded responses goal)."
     drift: null
 
   write-back:
@@ -68,11 +68,11 @@ arrows:
     parent: null
     sampled: 2026-10-03
     audited: 2026-10-04
-    audited_sha: null
+    audited_sha: 5cc28ab
     blocks: [server]
     blockedBy: [resolution]
     detail: write-back.md
-    next: "None; all specs implemented and tested. audited_sha to be set at commit"
+    next: "None; all specs implemented and tested."
     drift: null
 
   server:
@@ -80,7 +80,7 @@ arrows:
     parent: null
     sampled: 2026-10-03
     audited: 2026-10-04
-    audited_sha: null
+    audited_sha: 5cc28ab
     blocks: []
     blockedBy: [program-lifecycle, queries, write-back]
     detail: server.md
@@ -92,9 +92,9 @@ arrows:
     parent: null
     sampled: 2026-10-03
     audited: 2026-10-04
-    audited_sha: null
+    audited_sha: 5cc28ab
     blocks: [server]
     blockedBy: [program-lifecycle, write-back, resolution]
     detail: gui-host.md
-    next: "None; all specs implemented and tested (GUI smoke suite on demand). audited_sha to be set at commit"
+    next: "None; all specs implemented and tested (GUI smoke suite on demand)."
     drift: null
