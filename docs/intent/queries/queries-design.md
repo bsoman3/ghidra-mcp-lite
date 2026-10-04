@@ -9,7 +9,7 @@ prefix: QRY
 
 ## Context and Design Philosophy
 
-Queries are the read side of the server: 16 MCP tools that let a client explore an analyzed binary (its functions, memory layout, data, symbols, strings, code, references, and call graphs) without changing it. Each tool runs against one `Program` that program-lifecycle has already let through its analysis gate. Each turns caller strings into Ghidra objects through resolution, and returns a pydantic model from `models.py`.
+Queries are the read side of the server: 22 MCP tools that let a client explore an analyzed binary (its functions, memory layout, data, symbols, strings, code, references, call relations, call graphs, p-code, and data flow) and compare functions, without changing anything. Each tool runs against one `Program` that program-lifecycle has already let through its analysis gate. Each turns caller strings into Ghidra objects through resolution, and returns a pydantic model from `models.py`.
 
 Principles:
 
@@ -22,7 +22,7 @@ The MCP wrappers (parameter defaults, error mapping, tool descriptions) belong t
 
 ## Tool Catalogue
 
-This catalogue covers the 16 read-only binary tools owned by queries. The full 29-tool registry lives in the server LLD (`docs/intent/server/server-design.md`). That includes the 5 project-management tools (`list_project_binaries`, `list_project_binary_metadata`, `import_binary`, `delete_project_binary`, `reanalyze_binary`) and the 8 write-back tools.
+This catalogue covers the 22 read-only binary tools owned by queries. The full tool registry lives in the server LLD (`docs/intent/server/server-design.md`). That includes the 5 project-management tools (`list_project_binaries`, `list_project_binary_metadata`, `import_binary`, `delete_project_binary`, `reanalyze_binary`) and the 8 write-back tools.
 
 | MCP tool | Implementation | Target resolution | Result model | Paging |
 |---|---|---|---|---|
@@ -42,6 +42,12 @@ This catalogue covers the 16 read-only binary tools owned by queries. The full 2
 | `search_strings` | `search_strings` | n/a (substring) | `StringSearchResults` | limit only, total |
 | `read_bytes` | `read_bytes` | `_parse_address` | `BytesReadResult` | size 1–8192 |
 | `gen_callgraph` | `gen_callgraph` | `resolve_function` (read) | `CallGraphResult` | n/a |
+| `get_function_callers` | `get_function_callers` | `resolve_function` (read) | `FunctionCallers` | none |
+| `get_function_callees` | `get_function_callees` | `resolve_function` (read) | `FunctionCallees` | none |
+| `diff_functions` | `diff_functions` | `resolve_function` (read), each side in its own binary | `FunctionDiff` | n/a |
+| `find_similar_functions_fuzzy` | `find_similar_functions_fuzzy` | `resolve_function` (read) | `SimilarFunctions` | `limit` |
+| `get_function_pcode` | `get_function_pcode` | `resolve_function` (read) | `FunctionPcode` | `max_ops`, with `truncated` |
+| `analyze_dataflow` | `analyze_dataflow` | `resolve_function` (read); variable by exact name | `DataflowResult` | `max_ops`, with `truncated` |
 
 ## Listings
 
@@ -51,7 +57,7 @@ This catalogue covers the 16 read-only binary tools owned by queries. The full 2
 - **Classes** — non-dynamic symbols whose symbol type is `Class`: qualified name and parent namespace.
 - **Namespaces** — non-dynamic symbols of type `Namespace`, `Class`, or `Library`.
 - **Imports** — `symbolTable.getExternalSymbols()`. An optional case-insensitive `re.search` applies to the simple name. The library is the parent namespace.
-- **Exports** — `getAllSymbols(True)` (includes dynamic symbols), filtered to external entry points, with the same optional regex filter: name and address.
+- **Exports** — `getAllSymbols(True)` (includes dynamic symbols), filtered to external entry points, with the same optional regex filter: name and address. Ghidra's external entry points are the binary's entry points: its exports and the program entry (observed: `entry` and `_main` for a Mach-O executable).
 
 ## Searches
 
@@ -71,9 +77,20 @@ This catalogue covers the 16 read-only binary tools owned by queries. The full 2
 - **From** — `_parse_address`, then every reference from that address: the simple name of the function containing the *to* address (or `None`), from, to, and type. The source function is the same for every reference from one address, so the target's function is the informative value; the field and tool descriptions say which function each tool reports.
 - **Call graph** — a missing `ghidrecomp` raises `Stop("ghidrecomp is required…")`. Otherwise: `resolve_function` in read mode, then `ghidrecomp.callgraph.gen_callgraph(func, max_display_depth, direction, max_run_time, name=<qualified>, include_refs, condense_threshold, top_layers, bottom_layers, wrap_mermaid=False)`. The graph returned is the first entry whose type equals the requested display type; entries that are not display types (URLs, images) are skipped, and if none matches, `ValueError`. The Mermaid URL is the first line of the `mermaid_url` entry, or `""`. Defaults: `include_refs=True`, `max_depth=None`, `max_run_time=60`, `condense_threshold=50`, `top_layers=5`, `bottom_layers=5`.
 
+## Call Relations, Comparison, P-code, and Data Flow
+
+- **Callers** (`get_function_callers`) — the references *to* the function's entry, and to the entries of thunks that forward to it (`getFunctionThunkAddresses(true)`), whose reference type is a call. They are grouped by the function containing each call site: each caller is listed once with its name, entry address, and call-site addresses. Call sites outside any function form one group without a function.
+- **Callees** (`get_function_callees`) — for every instruction in the function body, its call references, grouped by target: each callee is listed once with its name, entry address, call-site addresses, and, for a thunk, the qualified name of the function it forwards to. A call instruction whose flow is computed and that has no call reference is listed in `indirect_call_sites`, so unresolved indirect calls are visible rather than missing.
+- **Diff** (`diff_functions`) — compares two functions, in the same binary or in two binaries (`other_binary_name`), as decompiled C (`view="decompiled"`, the default) or as disassembly (`view="disassembly"`: one `mnemonic operands` line per instruction, without addresses or bytes). With `normalize` (default on), Ghidra's address-derived default names (`FUN_…`, `DAT_…`, `LAB_…`, `PTR_…`, `switchD_…`, and string labels `s_…`/`u_…` that end in an address), hexadecimal literals of four or more digits, and each function's own name are replaced by placeholders, so functions compared across binaries or locations are not flooded with address noise. The result carries a unified diff (`context_lines`, default 3), a similarity ratio (`difflib.SequenceMatcher` over lines, 0–1), and whether the normalized texts are identical. Each side's resolution note is reported. A decompiler failure is `stop`, as for `decompile_function`.
+- **Fuzzy similarity** (`find_similar_functions_fuzzy`) — ranks the functions of a binary (`target_binary_name`, default the query's own binary) by similarity to the query function. Each function's feature is the multiset of 3-grams of its instruction mnemonics, in address order, with operands ignored (a function shorter than three instructions contributes its whole mnemonic sequence as one gram). Similarity is the multiset Jaccard index, `Σ min / Σ max` of gram counts, 0–1. Candidates are non-external, non-thunk functions whose instruction count is within half to double the query's; the query itself is excluded. Matches at or above `min_similarity` (default 0.5) are returned, highest first (ties by address), up to `limit` (default 10), with each match's instruction count, the number of functions scanned, and the method used. Features are computed once per program and kept until the binary is next analyzed.
+- **P-code** (`get_function_pcode`) — `form="raw"` (the default) lists each instruction's p-code operations (`Instruction.getPcode()`), in address order; `form="high"` lists the decompiler's high p-code (`HighFunction.getPcodeOps()`), decompiling with the 120-second limit. Each operation has its address, sequence number, mnemonic, and Ghidra's text form. At most `max_ops` operations (1–20000, default 2000) are returned; `total_ops` counts all, and `truncated` marks a cut list.
+- **Data flow** (`analyze_dataflow`) — decompiles the function (120 seconds), finds the named variable among the decompiler's local symbols (parameters and locals) by exact, case-sensitive name, and returns the backward slice (`direction="backward"`, the default: the operations that contribute to the variable) or forward slice (the operations it influences), from Ghidra's `DecompilerUtils` slice functions over every instance of the variable. Operations are deduplicated and ordered by address and sequence number; the result also lists the names of the variables those operations read or write. `max_ops` (1–5000, default 500) bounds the list as for p-code. An unknown variable fails as `fix_input`, listing the available names; a variable with no data flow in the decompiler output (no high variable) also fails as `fix_input`.
+
+**Two binaries in one call.** `diff_functions` and `find_similar_functions_fuzzy` may read two binaries. Both pass program-lifecycle's gate, and the server takes both programs' locks in pathname order before the call, so two such calls on the same pair can never deadlock.
+
 ## Disclosure and Partial Results
 
-**Resolution disclosure.** `decompile_function`, `disassemble_function`, `gen_callgraph`, and `list_cross_references` resolve their target through resolution's read mode. Their results carry an optional `resolution` field. It holds resolution's note when the target came from a loose match (for example `'bar' resolved to Foo::bar @ 00401000 (partial name match)`), and is empty for an exact match.
+**Resolution disclosure.** `decompile_function`, `disassemble_function`, `gen_callgraph`, `list_cross_references`, `get_function_callers`, `get_function_callees`, `find_similar_functions_fuzzy`, `get_function_pcode`, and `analyze_dataflow` resolve their target through resolution's read mode, and `diff_functions` resolves two. Their results carry an optional `resolution` field (`resolution_a`/`resolution_b` for a diff). It holds resolution's note when the target came from a loose match (for example `'bar' resolved to Foo::bar @ 00401000 (partial name match)`), and is empty for an exact match.
 
 **Partial results.** These tools return what succeeded and mark the rest:
 
@@ -116,6 +133,8 @@ Defined in `models.py` (except `ProgramInfo`/`ProgramInfos`, owned by server). F
 - `CrossReferenceInfo.function_name`: the source address's function for `list_cross_references`, the target address's function for `get_xrefs_from`.
 - `BytesReadResult.size`: "Number of bytes actually read."
 - `CallGraphDirection` ∈ {`calling`, `called`}; `CallGraphDisplayType` ∈ {`flow`, `flow_ends`, `mind`}.
+- `FunctionCallers`/`FunctionCallees` list `CallRelation`s (name, address, call sites, and for callees `thunk_of`); `FunctionCallees.indirect_call_sites` marks unresolved indirect calls.
+- `FunctionDiff`, `SimilarFunctions`, `FunctionPcode` (with `PcodeOpInfo`), and `DataflowResult` as described above; `truncated` and `total_ops` mark a bounded list.
 
 ## Decisions & Alternatives
 
@@ -136,6 +155,13 @@ Defined in `models.py` (except `ProgramInfo`/`ProgramInfos`, owned by server). F
 | `read_bytes` cap | 8192 bytes | Uncapped; configurable | *[inferred]* It bounds response size. |
 | Call graphs | Delegate to `ghidrecomp`, as an optional dependency | Native implementation | `ghidrecomp` is an optional extra. |
 | String iterator | `DefinedStringIterator` only | Feature-detect older APIs | Ghidra 12.1 is the minimum (HLD Goals). |
+| Callers through thunks | Include call sites that reach the function through its thunks | Only direct references to its entry | Calls to imported and forwarded functions go through thunks; omitting them would hide most callers of such functions. |
+| Indirect calls | List computed calls without a resolved target as `indirect_call_sites` | Omit them | HLD tenet *Explicit over silent*: an unresolved call is a known gap, not an absence. |
+| Diff text | Decompiled C by default, disassembly on request, both normalized for address-derived names | Raw text only; p-code | Decompiled C is what analysts compare; normalization keeps cross-binary diffs readable. Raw comparison remains available with `normalize=false`. |
+| Fuzzy similarity | Multiset Jaccard of mnemonic 3-grams, size-prefiltered, cached per program | BSim; Function ID hashes; embeddings | BSim needs a database and Function ID matches only near-identical bodies; embeddings are a non-goal. The heuristic is transparent (the method is reported), cheap, and tolerant of small edits. |
+| P-code size | `max_ops` with `total_ops` and `truncated` | Unbounded | P-code is several times the size of disassembly; a cheap explicit bound keeps responses usable (HLD tenet *Explicit over silent*). |
+| Data-flow variable matching | Exact, case-sensitive decompiler names, listing candidates on a miss | Loose matching | Variable names like `local_10`/`local_100` collide under partial matching; exact names are what the decompiler shows. |
+| Two-binary locking | Both programs' locks, in pathname order, taken by the server | Lock one program at a time | Reads of both programs must not interleave with writes or analysis; a fixed order prevents deadlock. |
 
 ## Open Questions & Future Decisions
 

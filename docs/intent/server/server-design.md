@@ -26,7 +26,7 @@ Principles stated in the code and README:
 
 | Option | Default | Env | Effect consumed by |
 |---|---|---|---|
-| `-t, --transport` `stdio`\|`streamable-http` (`sse` removed; see Transports) | `stdio` | `MCP_TRANSPORT` | server |
+| `-t, --transport` `stdio`\|`streamable-http` (`sse` removed; see Transports) | `stdio` (`streamable-http` with `--gui`) | `MCP_TRANSPORT` | server |
 | `-p, --port` | `8000` | `MCP_PORT` | server (HTTP transports) |
 | `-o, --host` | `127.0.0.1` | `MCP_HOST` | server (HTTP transports) |
 | `--project-path` | `ghidra_projects` | n/a | program-lifecycle (server turns a `.gpr` into a directory and name) |
@@ -37,10 +37,11 @@ Principles stated in the code and README:
 | `--symbols-path` | none (→ `<project>/symbols`) | n/a | analysis-config |
 | `--list-project-binaries` | flag | n/a | server one-shot |
 | `--delete-project-binary NAME` | none | n/a | server one-shot |
+| `--gui` | flag | n/a | gui-host: host the Ghidra GUI in this process and serve over streamable HTTP (GUI mode) |
 | `INPUT_PATHS` (each must exist) | none | n/a | program-lifecycle import |
 | `-v, --version` / `-h, --help` | n/a | n/a | click |
 
-Click validates that input paths exist before the JVM starts.
+Click validates that input paths exist before the JVM starts. With `--gui`, the `stdio` transport and the one-shots (`--analyze-only`, `--list-project-binaries`, `--delete-project-binary`) are usage errors, and an unavailable HTTP port is reported before the GUI launches (gui-host).
 
 Per-binary analysis options (PDB path, GDT archives, analyzer options, symbol use, forced re-analysis) are **not** CLI flags. They are arguments of the `import_binary` and `reanalyze_binary` tools. Binaries given on the command line, including under `--analyze-only`, are analyzed with default options: symbols on (via the symbol server when `ghidrecomp` is installed), no GDTs, and no analyzer overrides.
 
@@ -61,11 +62,13 @@ Per-binary analysis options (PDB path, GDT archives, analyzer options, symbol us
 8. mcp.run("stdio") | mcp.run("streamable-http", host=…, port=…); finally ctx.close()
 ```
 
+With `--gui`, steps 2–8 are replaced by gui-host's launch: the server validates the command line, ensures the project exists, and launches the Ghidra GUI in-process; once the GUI reports the project active, gui-host builds the GUI-mode context, imports the inputs, starts the analysis pass, registers the GUI-only tools, and serves over streamable HTTP on a background thread. The process exits when the GUI exits.
+
 Waiting for analysis happens inside tool calls (program-lifecycle LIFE-039), never before the handshake. A stdio client therefore always gets its `initialize` reply promptly, however long analysis takes.
 
 ## Transports
 
-`stdio` (local) and `streamable-http` (remote) only. `sse` is removed: the MCP specification deprecates it in favor of streamable HTTP, and SDK 2.x caps SSE events at 1 MiB by default, which large results would exceed.
+`stdio` (local) and `streamable-http` (remote, and always in GUI mode) only. `sse` is removed: the MCP specification deprecates it in favor of streamable HTTP, and SDK 2.x caps SSE events at 1 MiB by default, which large results would exceed.
 
 ## MCP Server and Lifespan (SDK 2.x)
 
@@ -76,9 +79,9 @@ The server is built on MCP Python SDK 2.x: `MCPServer` from `mcp.server.mcpserve
 - A tool returning a pydantic model advertises an output schema and returns structured content derived from it.
 - A raised `ToolError` reaches the model as an error result; any other exception is reported only as `Error executing tool <name>` (see Failure Reporting).
 
-## Tool Registry (all 29)
+## Tool Registry
 
-Order follows `server.py`. Every binary-scoped tool resolves its binary through `get_program_info`, which applies the analysis gate (program-lifecycle LIFE-006–008, LIFE-032, LIFE-039). Every tool converts exceptions with `_err`. All tools are synchronous.
+35 tools in every mode, plus 3 GUI-only tools registered only in GUI mode (see the end of the table). Order follows `server.py`. Every binary-scoped tool resolves its binary through `get_program_info`, which applies the analysis gate (program-lifecycle LIFE-006–008, LIFE-032, LIFE-039). Every tool converts exceptions with `_err`. All tools are synchronous.
 
 | # | Tool | Owning segment | Delegates to | Parameters (defaults) | Behavior in the wrapper itself |
 |---|---|---|---|---|---|
@@ -111,6 +114,15 @@ Order follows `server.py`. Every binary-scoped tool resolves its binary through 
 | 27 | `set_local_variable_type` | write-back | `set_local_variable_type` | `binary_name, function_name_or_address, var_name, new_type` | Pass-through. |
 | 28 | `gen_callgraph` | queries | `gen_callgraph` | `binary_name, function_name, direction=calling, display_type=flow, include_refs=True, max_depth=None, condense_threshold=50, top_layers=5, bottom_layers=5, max_run_time=60` | Defaults equal the implementation's. `function_name` accepts a name or an address. |
 | 29 | `reanalyze_binary` | program-lifecycle | `AnalysisOptions.create`, `reanalyze_binary` | `binary_name, pdb_path=None, gdts=None, analyzer_options=None, no_symbols=False` | Validates the PDB and GDT paths (`fix_input`). Returns `"Re-analyzing '<n>' in the background…"`. `retry_later` while that binary is importing or analyzing; `stop` for a binary whose import failed. Not gated. |
+| 30 | `get_function_callers` | queries | `get_function_callers` | `binary_name, name_or_address` | Pass-through. |
+| 31 | `get_function_callees` | queries | `get_function_callees` | `binary_name, name_or_address` | Pass-through. |
+| 32 | `diff_functions` | queries | `diff_functions` | `binary_name, function_a, function_b, other_binary_name=None, view=decompiled, normalize=True, context_lines=3` | Gates both binaries and takes both programs' locks in pathname order. |
+| 33 | `find_similar_functions_fuzzy` | queries | `find_similar_functions_fuzzy` | `binary_name, name_or_address, target_binary_name=None, limit=10, min_similarity=0.5` | Gates both binaries and takes both programs' locks in pathname order. |
+| 34 | `get_function_pcode` | queries | `get_function_pcode` | `binary_name, name_or_address, form=raw, max_ops=2000` | Pass-through. |
+| 35 | `analyze_dataflow` | queries | `analyze_dataflow` | `binary_name, function_name_or_address, variable, direction=backward, max_ops=500` | Pass-through. |
+| 36 | `get_current_address` | gui-host | `GuiGhidraContext.current_location` | n/a | GUI mode only. The binary, address, and containing function of CodeBrowser's cursor. |
+| 37 | `get_current_function` | gui-host | `GuiGhidraContext.current_location` | n/a | GUI mode only. The binary and the function containing CodeBrowser's cursor. |
+| 38 | `go_to` | gui-host | `GuiGhidraContext.go_to` | `binary_name, name_or_address` | GUI mode only. Moves CodeBrowser to the target; gated like other binary-scoped tools. |
 
 README § Tool Reference groups these tools by category.
 
@@ -193,6 +205,7 @@ Every tool failure carries exactly one recovery category, telling the caller wha
 | Metadata availability | Return metadata whatever the analysis state | Put it behind the analysis gate | Metadata doesn't depend on analysis; a `retry_later` would misinform the caller. |
 | One-shot exit status | Non-zero exit when the command fails | Always exit 0 | HLD tenet *Explicit over silent*; lets scripts detect failure. |
 | Logging | stderr at INFO | stdout | *[inferred]* The stdio transport owns stdout. |
+| GUI-only tools | Registered only when `--gui` is given | Register in every mode and fail headless | Agents see only tools that can work (gui-host). |
 | CLI framework | click, with env-var fallbacks for transport, port, and host | argparse | *[inferred]* |
 | Project management on the CLI | Flags on the main command that exit after running | Subcommands | *[inferred]* |
 | `.gpr` support | Accept a `.gpr` path and derive the directory and name | Require directory plus name | Stated in README § CLI Reference. |

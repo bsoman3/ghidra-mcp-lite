@@ -4,7 +4,7 @@ The 8 tools that record an analyst's annotations in the program (comments, funct
 
 ## Status
 
-**OK** — all 27 active specs implemented and covered by tests (2026-10-03). Mapped 2026-10-03 from git SHA `1acf6ba`; implemented and audited at `7f8909c`.
+**OK** — all 28 active specs implemented and covered by tests (2026-10-04). Mapped 2026-10-03 from git SHA `1acf6ba`; audited at `7f8909c`, extended for GUI mode and the analysis tools on 2026-10-04 (not yet committed).
 
 ## References
 
@@ -15,7 +15,7 @@ The 8 tools that record an analyst's annotations in the program (comments, funct
 - docs/intent/write-back/write-back-design.md
 
 ### EARS
-- docs/intent/write-back/write-back-specs.md (27 specs, prefix `WB-*`)
+- docs/intent/write-back/write-back-specs.md (28 specs, prefix `WB-*`)
 
 ### Tests
 - `tests/test_write_back.py` — every write tool against an in-memory program (`tests/program_fakes.py`), with stubbed Ghidra classes
@@ -25,7 +25,7 @@ The 8 tools that record an analyst's annotations in the program (comments, funct
 ### Code
 - `src/ghidra_mcp/tools.py` — `_with_transaction`, `_set_comment`, `set_disassembly_comment`, `set_decompiler_comment`, `rename_function`, `rename_function_by_address`, `rename_data`, `_find_local_variable`, `rename_variable`, `set_function_prototype`, `set_local_variable_type`
 - Inbound, owned elsewhere: the MCP wrappers in `server.py` (server)
-- Outbound, owned elsewhere: resolution (`find_function`, `_parse_address`, `_resolve_data_type`); program-lifecycle (the program's decompiler, project handle, and lock)
+- Outbound, owned elsewhere: resolution (`find_function`, `_parse_address`, `_resolve_data_type`); program-lifecycle (the program's decompiler, project handle, and lock); gui-host (the GUI-mode mutation runner, `GuiGhidraContext.run_mutation`)
 
 ## Architecture
 
@@ -42,14 +42,14 @@ The 8 tools that record an analyst's annotations in the program (comments, funct
 
 | Category | Spec IDs | Implemented | Deferred | Gaps |
 |----------|----------|-------------|----------|------|
-| Transaction contract | WB-001 to WB-005, WB-022 | 6 | 0 | 0 |
+| Transaction contract | WB-001 to WB-005, WB-022, WB-028 | 7 | 0 | 0 |
 | Comments | WB-006, WB-007, WB-025 to WB-027 | 5 | 0 | 0 |
 | Renames | WB-008 to WB-012, WB-023 | 6 | 0 | 0 |
 | Local variable edits | WB-013 to WB-017 | 5 | 0 | 0 |
 | Function prototypes | WB-018 to WB-020, WB-024 | 4 | 0 | 0 |
 | Results | WB-021 | 1 | 0 | 0 |
 
-**Summary:** 27 of 27 active specs implemented, all with tests; 0 gaps. No open questions.
+**Summary:** 28 of 28 active specs implemented, all with tests; 0 gaps. No open questions.
 
 ## Key Findings
 

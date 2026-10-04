@@ -7,17 +7,17 @@ Transports: stdio and streamable-http (MCP Python SDK 2.x).
 
 import logging
 import sys
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import click
 import pyghidra
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from ghidra_mcp import __version__
+from ghidra_mcp import __version__, gui
 from ghidra_mcp.context import AnalysisOptions, GhidraContext
 from ghidra_mcp.errors import STOP, Stop, classify, describe
 from ghidra_mcp.models import (
@@ -26,17 +26,25 @@ from ghidra_mcp.models import (
     CallGraphDisplayType,
     CallGraphResult,
     CrossReferenceInfos,
+    CurrentAddress,
+    CurrentFunction,
+    DataflowResult,
     DataItems,
     DecompiledFunction,
     DisassemblyResult,
     ExportInfos,
+    FunctionCallees,
+    FunctionCallers,
+    FunctionDiff,
     FunctionInfo,
     FunctionList,
+    FunctionPcode,
     ImportInfos,
     MemorySegments,
     NamespaceList,
     ProgramInfo,
     ProgramInfos,
+    SimilarFunctions,
     StringSearchResults,
     SymbolSearchResults,
 )
@@ -516,7 +524,8 @@ def list_exports(
     offset: int = 0,
     limit: int = 25,
 ) -> ExportInfos:
-    """List functions and symbols exported by a binary.
+    """List a binary's entry points: its exported functions and symbols and the program entry
+    (Ghidra's external entry points).
 
     Args:
         binary_name: Name of the binary.
@@ -593,6 +602,8 @@ def search_strings(
     limit: int = 100,
 ) -> StringSearchResults:
     """Search for strings defined in a binary using a case-insensitive substring match.
+
+    An empty query lists every defined string (up to limit).
 
     Uses Ghidra's native DefinedStringIterator — no ML model, no ChromaDB.
     The 'total' field shows how many matches exist even if limit was reached. A string that
@@ -868,6 +879,246 @@ def gen_callgraph(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Call relations, comparison, p-code, and data flow
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# @spec QRY-052
+@contextmanager
+def _locked(*entries) -> Iterator[None]:
+    """Hold the programs' locks, taken in pathname order so that two-binary calls can't deadlock."""
+    unique = {entry.pathname: entry for entry in entries}
+    with ExitStack() as stack:
+        for pathname in sorted(unique):
+            stack.enter_context(unique[pathname].lock)
+        yield
+
+
+@mcp.tool()
+def get_function_callers(binary_name: str, name_or_address: str, ctx: Context) -> FunctionCallers:
+    """List the functions that call a function, including calls through its thunks.
+
+    Each caller appears once with its call-site addresses; call sites outside any function
+    are grouped without a name.
+
+    Args:
+        binary_name: Name of the binary.
+        name_or_address: Function name or hex address (a unique partial name is used and reported).
+    """
+    try:
+        return _tools(ctx, binary_name).get_function_callers(name_or_address)
+    except Exception as e:
+        raise _err(e) from e
+
+
+@mcp.tool()
+def get_function_callees(binary_name: str, name_or_address: str, ctx: Context) -> FunctionCallees:
+    """List the functions a function calls, with call sites; thunks name the function they
+    forward to, and unresolved indirect calls are listed separately.
+
+    Args:
+        binary_name: Name of the binary.
+        name_or_address: Function name or hex address (a unique partial name is used and reported).
+    """
+    try:
+        return _tools(ctx, binary_name).get_function_callees(name_or_address)
+    except Exception as e:
+        raise _err(e) from e
+
+
+@mcp.tool()
+def diff_functions(
+    binary_name: str,
+    function_a: str,
+    function_b: str,
+    ctx: Context,
+    other_binary_name: str | None = None,
+    view: Literal["decompiled", "disassembly"] = "decompiled",
+    normalize: bool = True,
+    context_lines: int = 3,
+) -> FunctionDiff:
+    """Compare two functions as a unified diff, in one binary or across two.
+
+    With normalize (the default), Ghidra's address-derived names (FUN_…, DAT_…, LAB_…),
+    long hex literals, and the functions' own names are masked, so copies of the same code
+    at other addresses compare as identical.
+
+    Args:
+        binary_name: Binary containing function_a (and function_b unless other_binary_name is given).
+        function_a: First function, by name or hex address.
+        function_b: Second function, by name or hex address.
+        other_binary_name: Binary containing function_b, if different.
+        view: 'decompiled' (C, the default) or 'disassembly'.
+        normalize: Mask address-derived names and literals before comparing.
+        context_lines: Lines of context in the diff.
+    """
+    try:
+        ghidra_ctx: GhidraContext = ctx.request_context.lifespan_context
+        first = ghidra_ctx.get_program_info(binary_name)
+        second = ghidra_ctx.get_program_info(other_binary_name) if other_binary_name else first
+        with _locked(first, second):
+            other = GhidraTools(second) if second is not first else None
+            return GhidraTools(first).diff_functions(function_a, function_b, other=other, view=view,
+                                                     normalize=normalize, context_lines=context_lines)
+    except Exception as e:
+        raise _err(e) from e
+
+
+@mcp.tool()
+def find_similar_functions_fuzzy(
+    binary_name: str,
+    name_or_address: str,
+    ctx: Context,
+    target_binary_name: str | None = None,
+    limit: int = 10,
+    min_similarity: float = 0.5,
+) -> SimilarFunctions:
+    """Find functions similar to a given one, in the same binary or another.
+
+    Similarity is the multiset Jaccard index of instruction-mnemonic 3-grams (operands
+    ignored), so it tolerates different addresses, registers, and small edits. Candidates
+    are limited to functions within half to double the query's size.
+
+    Args:
+        binary_name: Binary containing the query function.
+        name_or_address: Query function, by name or hex address.
+        target_binary_name: Binary to search (default: the same binary).
+        limit: Maximum number of matches.
+        min_similarity: Minimum similarity, 0 to 1.
+    """
+    try:
+        ghidra_ctx: GhidraContext = ctx.request_context.lifespan_context
+        source = ghidra_ctx.get_program_info(binary_name)
+        target = ghidra_ctx.get_program_info(target_binary_name) if target_binary_name else source
+        with _locked(source, target):
+            other = GhidraTools(target) if target is not source else None
+            return GhidraTools(source).find_similar_functions_fuzzy(
+                name_or_address, target=other, limit=limit, min_similarity=min_similarity)
+    except Exception as e:
+        raise _err(e) from e
+
+
+@mcp.tool()
+def get_function_pcode(
+    binary_name: str,
+    name_or_address: str,
+    ctx: Context,
+    form: Literal["raw", "high"] = "raw",
+    max_ops: int = 2000,
+) -> FunctionPcode:
+    """Get a function's p-code: per-instruction ('raw') or the decompiler's ('high').
+
+    At most max_ops operations are returned (1–20000); 'truncated' and 'total_ops' show
+    whether more exist.
+
+    Args:
+        binary_name: Name of the binary.
+        name_or_address: Function name or hex address.
+        form: 'raw' (the default) or 'high'.
+        max_ops: Maximum operations to return.
+    """
+    try:
+        return _tools(ctx, binary_name).get_function_pcode(name_or_address, form=form, max_ops=max_ops)
+    except Exception as e:
+        raise _err(e) from e
+
+
+@mcp.tool()
+def analyze_dataflow(
+    binary_name: str,
+    function_name_or_address: str,
+    variable: str,
+    ctx: Context,
+    direction: Literal["backward", "forward"] = "backward",
+    max_ops: int = 500,
+) -> DataflowResult:
+    """Trace data flow for a decompiler variable: what contributes to it ('backward') or
+    what it influences ('forward').
+
+    Returns the high p-code operations in the slice, by address, and the variables they
+    touch. The variable name must match the decompiler output exactly (e.g. param_1,
+    local_10, iVar2); an unknown name lists the available ones.
+
+    Args:
+        binary_name: Name of the binary.
+        function_name_or_address: Function name or hex address.
+        variable: Decompiler variable name.
+        direction: 'backward' (the default) or 'forward'.
+        max_ops: Maximum operations to return (1–5000).
+    """
+    try:
+        return _tools(ctx, binary_name).analyze_dataflow(function_name_or_address, variable,
+                                                         direction=direction, max_ops=max_ops)
+    except Exception as e:
+        raise _err(e) from e
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GUI-only tools (registered by register_gui_tools in GUI mode)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def get_current_address(ctx: Context) -> CurrentAddress:
+    """GUI mode only. Where the analyst's cursor is in Ghidra's CodeBrowser.
+
+    Returns the binary open in the most recently focused CodeBrowser, the cursor's address,
+    and the name of the function containing it (if any).
+    """
+    try:
+        ghidra_ctx: gui.GuiGhidraContext = ctx.request_context.lifespan_context
+        return CurrentAddress(**ghidra_ctx.current_location())
+    except Exception as e:
+        raise _err(e) from e
+
+
+def get_current_function(ctx: Context) -> CurrentFunction:
+    """GUI mode only. The function containing the analyst's cursor in Ghidra's CodeBrowser.
+
+    Fails if the cursor is not inside a function.
+    """
+    try:
+        ghidra_ctx: gui.GuiGhidraContext = ctx.request_context.lifespan_context
+        binary, func = ghidra_ctx.current_function()
+        return CurrentFunction(
+            binary_name=binary,
+            function=FunctionInfo(
+                name=str(func.getName(True)),
+                address=str(func.getEntryPoint()),
+                signature=str(func.getSignature()),
+                external=bool(func.isExternal()),
+            ),
+        )
+    except Exception as e:
+        raise _err(e) from e
+
+
+def go_to(binary_name: str, name_or_address: str, ctx: Context) -> str:
+    """GUI mode only. Show a location in Ghidra's CodeBrowser: makes the binary the current
+    program and moves the cursor there.
+
+    Args:
+        binary_name: Name of the binary.
+        name_or_address: Hex address, or a symbol or function name (a unique partial name is
+            used and reported).
+    """
+    try:
+        ghidra_ctx: gui.GuiGhidraContext = ctx.request_context.lifespan_context
+        return ghidra_ctx.go_to(binary_name, name_or_address)
+    except Exception as e:
+        raise _err(e) from e
+
+
+GUI_TOOLS = (get_current_address, get_current_function, go_to)
+
+
+# @spec GUI-026
+def register_gui_tools() -> None:
+    """Register the GUI-only tools; called only in GUI mode."""
+    for fn in GUI_TOOLS:
+        mcp.add_tool(fn)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -912,6 +1163,9 @@ def gen_callgraph(
 @click.option("--analyze-only", is_flag=True,
               help="Import inputs, analyze every binary to completion, report each status, "
                    "and exit (non-zero if any binary failed).")
+@click.option("--gui", "gui_mode", is_flag=True,
+              help="GUI mode: open the Ghidra GUI in this process and serve over streamable HTTP "
+                   "alongside it; tool edits appear live and are left for you to save.")
 @click.argument("input_paths", type=click.Path(exists=True), nargs=-1)
 def main(
     transport: str,
@@ -925,6 +1179,7 @@ def main(
     list_project_binaries: bool,
     delete_project_binary: str | None,
     analyze_only: bool,
+    gui_mode: bool,
     input_paths: tuple[str, ...],
 ) -> None:
     """Lightweight Ghidra MCP server — native Ghidra tools, no ML/embedding.
@@ -945,6 +1200,9 @@ def main(
 
       # List binaries in an existing project:
       ghidra-mcp --project-path ./myproject --list-project-binaries
+
+      # GUI mode: watch and steer the agent in Ghidra's GUI (serves on http://127.0.0.1:8000/mcp):
+      ghidra-mcp --gui --project-path ~/ghidra_projects /path/to/binary
     """
     # Handle .gpr file paths
     if project_path.suffix.lower() == ".gpr":
@@ -952,6 +1210,29 @@ def main(
         project_name = project_path.stem
     else:
         project_dir = str(project_path)
+
+    # @spec SRV-045, GUI-001, GUI-002, GUI-003
+    if gui_mode:
+        click_ctx = click.get_current_context()
+        explicit_transport = click_ctx.get_parameter_source("transport") != click.core.ParameterSource.DEFAULT
+        if transport == "stdio" and explicit_transport:
+            raise click.UsageError("--gui serves over streamable-http; the stdio transport is not available.")
+        for flag, given in (("--analyze-only", analyze_only), ("--list-project-binaries", list_project_binaries),
+                            ("--delete-project-binary", delete_project_binary)):
+            if given:
+                raise click.UsageError(f"{flag} cannot be combined with --gui.")
+        try:
+            gui.check_port(host, port)
+        except OSError as e:
+            click.echo(f"Error: cannot serve on {host}:{port}: {e}", err=True)
+            sys.exit(1)
+        gui.ensure_project(project_dir, project_name)
+        gui.launch(
+            project_dir=project_dir, project_name=project_name, input_paths=input_paths, host=host,
+            port=port, wait_for_analysis=wait_for_analysis, verbose_analysis=verbose_analysis,
+            symbols_path=symbols_path,
+        )
+        return
 
     pyghidra.start(verbose_analysis)
 

@@ -4,7 +4,7 @@ Decides *how* Ghidra analyzes a binary: PDB/symbol-server setup, GDT type-archiv
 
 ## Status
 
-**OK** — all 21 active specs implemented and covered by tests (2026-10-03). Mapped 2026-10-03 from git SHA `1acf6ba`; implemented and audited at `7f8909c`.
+**OK** — all 21 active specs implemented and covered by tests (2026-10-04). Mapped 2026-10-03 from git SHA `1acf6ba`; audited at `7f8909c`, extended for GUI mode and the analysis tools on 2026-10-04 (not yet committed).
 
 ## References
 

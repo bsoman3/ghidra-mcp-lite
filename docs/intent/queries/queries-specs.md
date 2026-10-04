@@ -60,7 +60,30 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
 ## Resolution Disclosure
 
-- [x] **QRY-029**: When `decompile_function`, `disassemble_function`, `gen_callgraph`, or `list_cross_references` resolves its target from a loose match (RES-018, RES-019, RES-020), the system shall include resolution's disclosure note in the result's `resolution` field.
+- [x] **QRY-029**: When `decompile_function`, `disassemble_function`, `gen_callgraph`, `list_cross_references`, `get_function_callers`, `get_function_callees`, `find_similar_functions_fuzzy`, `get_function_pcode`, or `analyze_dataflow` resolves its target from a loose match (RES-018, RES-019, RES-020), the system shall include resolution's disclosure note in the result's `resolution` field; `diff_functions` shall report each side's note in `resolution_a` and `resolution_b`.
+
+## Call Relations
+
+- [x] **QRY-039**: When `get_function_callers` is called, the system shall return the functions whose call references reach the target function's entry or the entry of a thunk that forwards to it, each listed once with its qualified name, entry address, and call-site addresses, and shall group call sites outside any function into one entry without a function.
+- [x] **QRY-040**: When `get_function_callees` is called, the system shall return the targets of the call references made from the function's instructions, each listed once with its qualified name, entry address, call-site addresses, and, for a thunk, the qualified name of the function it forwards to.
+- [x] **QRY-041**: When `get_function_callees` finds a call instruction with computed flow and no call reference, the system shall list its address in `indirect_call_sites`.
+
+## Function Comparison
+
+- [x] **QRY-042**: When `diff_functions` is called, the system shall compare the two functions — the second in `other_binary_name` when given, else in the same binary — as decompiled C (`view="decompiled"`, the default) or as disassembly (`view="disassembly"`, one `mnemonic operands` line per instruction without addresses or bytes).
+- [x] **QRY-043**: Where `diff_functions` is called with `normalize` set (the default), the system shall replace Ghidra's address-derived default names (`FUN_`, `DAT_`, `LAB_`, `PTR_`, or `switchD_` followed by hexadecimal digits, and string labels `s_…`/`u_…` ending in an address), hexadecimal literals of four or more digits, and each function's own name with placeholders before comparing.
+- [x] **QRY-044**: When `diff_functions` compares two functions, the system shall return a unified diff with `context_lines` lines of context (default 3), the line-level similarity ratio from 0 to 1, and whether the compared texts are identical.
+- [x] **QRY-045**: When `find_similar_functions_fuzzy` is called, the system shall score each candidate by the multiset Jaccard index of the instruction-mnemonic 3-grams of the candidate and the query function (a function of fewer than three instructions contributing its whole mnemonic sequence as one gram), and report the method used.
+- [x] **QRY-046**: When `find_similar_functions_fuzzy` ranks candidates, the system shall consider the non-external, non-thunk functions of `target_binary_name` (default: the query's binary), excluding the query function and functions whose instruction count is outside half to double the query's, and return those scoring at least `min_similarity` (default 0.5), highest first and then by address, up to `limit` (default 10), with each one's instruction count and the number of functions scanned.
+- [x] **QRY-047**: The system shall compute a program's similarity features at most once and keep them until the binary is next analyzed.
+
+## P-code and Data Flow
+
+- [x] **QRY-048**: When `get_function_pcode` is called, the system shall return the function's p-code operations — each instruction's p-code in address order (`form="raw"`, the default) or the decompiler's high p-code (`form="high"`, decompiled with a 120-second limit, a decompiler failure being `stop`) — each with its address, sequence number, mnemonic, and text.
+- [x] **QRY-049**: When `get_function_pcode` or `analyze_dataflow` produces more operations than `max_ops`, the system shall return the first `max_ops`, report the total, and mark the result `truncated`. If `max_ops` is outside 1–20000 (p-code) or 1–5000 (data flow), then the system shall raise a `ValueError`.
+- [x] **QRY-050**: When `analyze_dataflow` is called, the system shall decompile the function (120 seconds, a decompiler failure being `stop`), find the variable among the decompiler's local symbols by exact, case-sensitive name, and return the operations in its backward slice (`direction="backward"`, the default) or forward slice, over every instance of the variable, deduplicated and ordered by address and sequence number, together with the names of the variables those operations read or write.
+- [x] **QRY-051**: If the variable given to `analyze_dataflow` is not among the decompiled function's local symbols, or has no data flow in the decompiler output, then the system shall raise a `ValueError`, listing the available variable names for an unknown variable.
+- [x] **QRY-052**: When `diff_functions` or `find_similar_functions_fuzzy` reads two binaries, the system shall pass both through the analysis gate and hold both programs' locks, acquired in pathname order, for the duration of the call.
 
 ## Query Contract
 

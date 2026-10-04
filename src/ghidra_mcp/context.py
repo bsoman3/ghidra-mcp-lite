@@ -121,6 +121,10 @@ class LoadedProgram:
     work_started: float | None = None  # when the current import/analysis began
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     settled: threading.Event = field(default_factory=threading.Event, repr=False)
+    # Queries' cached fuzzy-similarity features; cleared whenever the binary is analyzed.
+    similarity_index: dict | None = field(default=None, repr=False)
+    # GUI mode: how write tools apply a mutation (gui-host); None means commit and save.
+    mutation_runner: Callable[..., Any] | None = field(default=None, repr=False)
 
     @property
     def analysis_complete(self) -> bool:
@@ -575,6 +579,7 @@ class GhidraContext:
                     if entry.reanalysis_requested or self._needs_analysis(entry):
                         logger.info(f"Analyzing: {entry.name}")
                         entry.warnings = []
+                        entry.similarity_index = None  # @spec QRY-047
                         self._run_analysis(entry, options)
                         self._save(entry.program)  # only after a successful pass
                     else:
@@ -628,10 +633,11 @@ class GhidraContext:
         self.project.saveAs(program, "/", entry.name, True)
         return program, program.getDomainFile()
 
+    # @spec LIFE-019
     def _needs_analysis(self, entry: LoadedProgram) -> bool:
         from ghidra.program.util import GhidraProgramUtilities
 
-        return bool(GhidraProgramUtilities.shouldAskToAnalyze(entry.program))
+        return not GhidraProgramUtilities.isAnalyzed(entry.program)
 
     def _run_analysis(self, entry: LoadedProgram, options: AnalysisOptions) -> None:
         """Apply the binary's configuration and run Ghidra auto-analysis (no save)."""

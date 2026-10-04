@@ -88,6 +88,23 @@ def test_an_already_analyzed_program_skips_auto_analysis(tmp_path):
     assert ctx.programs["/a"].status is Status.READY
 
 
+# @spec LIFE-019
+def test_needing_analysis_means_ghidra_does_not_mark_the_program_analyzed(tmp_path, monkeypatch):
+    import types as _types
+
+    from tests.program_fakes import install_modules
+
+    marked = {"p": False}
+    install_modules(monkeypatch, {"ghidra.program.util": {"GhidraProgramUtilities": _types.SimpleNamespace(
+        isAnalyzed=lambda program: marked["p"],
+        shouldAskToAnalyze=lambda program: False,  # e.g. marked "don't ask" by GUI mode
+    )}})
+    entry = _types.SimpleNamespace(program="p")
+    assert GhidraContext._needs_analysis(object(), entry) is True
+    marked["p"] = True
+    assert GhidraContext._needs_analysis(object(), entry) is False
+
+
 # @spec LIFE-020
 def test_a_completed_analysis_saves_the_program(tmp_path):
     ctx = make_ctx("/a", tmp_path=tmp_path)

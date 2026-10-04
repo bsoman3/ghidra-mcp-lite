@@ -45,6 +45,8 @@ When program-lifecycle's analysis pass decides auto-analysis will run (Ghidra sa
 2. **Symbols and analyzer options** (`_configure_analysis`), together in one transaction: symbol configuration first, then each analyzer option.
 3. `analyzeAll`, then program-lifecycle marks the program analyzed and saves it.
 
+In GUI mode, gui-host runs analysis through Ghidra's analysis manager instead of `analyzeAll`; it applies the same steps 1–2, in the same order, before starting the manager.
+
 A program whose auto-analysis is skipped because it is already analyzed is left untouched.
 
 ## Symbol / PDB Configuration

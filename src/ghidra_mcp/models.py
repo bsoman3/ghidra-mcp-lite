@@ -26,6 +26,17 @@ class FunctionInfo(BaseModel):
     external: bool = Field(False, description="Whether this is an external/thunk function.")
 
 
+class CurrentAddress(BaseModel):
+    binary_name: str = Field(..., description="Binary open in CodeBrowser's current program.")
+    address: str = Field(..., description="Address of CodeBrowser's cursor.")
+    function_name: str | None = Field(None, description="Qualified name of the function containing the cursor, if any.")
+
+
+class CurrentFunction(BaseModel):
+    binary_name: str = Field(..., description="Binary open in CodeBrowser's current program.")
+    function: "FunctionInfo" = Field(..., description="The function containing CodeBrowser's cursor.")
+
+
 class FunctionList(BaseModel):
     functions: list[FunctionInfo] = Field(..., description="List of functions.")
     total: int = Field(..., description="Total matching functions (before pagination).")
@@ -207,6 +218,113 @@ class DisassemblyResult(BaseModel):
     address: str = Field(..., description="Function entry point address.")
     instructions: list[DisassemblyLine] = Field(..., description="All instructions in the function body.")
     partial: bool = Field(False, description="True if some instruction fields could not be read.")
+    resolution: str | None = Field(
+        None,
+        description="Set only when the target was resolved from a loose match (a partial name, "
+        "or an address inside a function): states what the input resolved to and how.",
+    )
+
+
+# ─── Call relations, comparison, p-code, and data flow ────────────────────────
+
+
+class CallRelation(BaseModel):
+    name: str | None = Field(None, description="Qualified function name; none for call sites outside any function or targets without a function.")
+    address: str | None = Field(None, description="Entry address of the function (callers) or the call target (callees).")
+    call_sites: list[str] = Field(..., description="Addresses of the call instructions.")
+    thunk_of: str | None = Field(None, description="For a thunk callee: the qualified name of the function it forwards to.")
+
+
+class FunctionCallers(BaseModel):
+    function: str = Field(..., description="Qualified name of the function.")
+    address: str = Field(..., description="Entry address of the function.")
+    callers: list[CallRelation] = Field(..., description="Functions that call it, directly or through its thunks.")
+    resolution: str | None = Field(
+        None,
+        description="Set only when the target was resolved from a loose match (a partial name, "
+        "or an address inside a function): states what the input resolved to and how.",
+    )
+
+
+class FunctionCallees(BaseModel):
+    function: str = Field(..., description="Qualified name of the function.")
+    address: str = Field(..., description="Entry address of the function.")
+    callees: list[CallRelation] = Field(..., description="Call targets of the function's instructions.")
+    indirect_call_sites: list[str] = Field(default_factory=list, description="Computed calls whose target Ghidra did not resolve.")
+    resolution: str | None = Field(
+        None,
+        description="Set only when the target was resolved from a loose match (a partial name, "
+        "or an address inside a function): states what the input resolved to and how.",
+    )
+
+
+class FunctionDiff(BaseModel):
+    binary_a: str
+    function_a: str = Field(..., description="Qualified name and entry of the first function.")
+    binary_b: str
+    function_b: str = Field(..., description="Qualified name and entry of the second function.")
+    view: str = Field(..., description="'decompiled' or 'disassembly'.")
+    normalized: bool = Field(..., description="Whether address-derived names, long hex literals, and the functions' own names were masked.")
+    identical: bool = Field(..., description="Whether the compared texts are identical.")
+    similarity: float = Field(..., description="Line-level similarity ratio, 0 to 1.")
+    diff: str = Field(..., description="Unified diff; empty when identical.")
+    resolution_a: str | None = Field(None, description="Disclosure note for a loose match of the first function.")
+    resolution_b: str | None = Field(None, description="Disclosure note for a loose match of the second function.")
+
+
+class SimilarFunction(BaseModel):
+    name: str
+    address: str
+    similarity: float = Field(..., description="Multiset Jaccard similarity, 0 to 1.")
+    instruction_count: int
+
+
+class SimilarFunctions(BaseModel):
+    binary: str
+    function: str
+    address: str
+    instruction_count: int = Field(..., description="Instructions in the query function.")
+    target_binary: str = Field(..., description="Binary whose functions were ranked.")
+    method: str = Field(..., description="How similarity was computed.")
+    candidates: list[SimilarFunction] = Field(..., description="Matches, most similar first.")
+    scanned: int = Field(..., description="Functions considered.")
+    resolution: str | None = Field(
+        None,
+        description="Set only when the target was resolved from a loose match (a partial name, "
+        "or an address inside a function): states what the input resolved to and how.",
+    )
+
+
+class PcodeOpInfo(BaseModel):
+    address: str = Field(..., description="Instruction address the operation belongs to.")
+    seq: int = Field(..., description="Sequence number of the operation at that address.")
+    mnemonic: str = Field(..., description="P-code operation, e.g. INT_ADD, LOAD, CALL.")
+    text: str = Field(..., description="Ghidra's text form of the operation.")
+
+
+class FunctionPcode(BaseModel):
+    function: str
+    address: str
+    form: str = Field(..., description="'raw' (per-instruction p-code) or 'high' (decompiler p-code).")
+    ops: list[PcodeOpInfo]
+    total_ops: int = Field(..., description="Operations in the function, including any not returned.")
+    truncated: bool = Field(False, description="True if more than max_ops operations exist.")
+    resolution: str | None = Field(
+        None,
+        description="Set only when the target was resolved from a loose match (a partial name, "
+        "or an address inside a function): states what the input resolved to and how.",
+    )
+
+
+class DataflowResult(BaseModel):
+    function: str
+    address: str
+    variable: str
+    direction: str = Field(..., description="'backward' (what contributes to the variable) or 'forward' (what it influences).")
+    ops: list[PcodeOpInfo] = Field(..., description="High p-code operations in the slice, by address.")
+    variables: list[str] = Field(..., description="Names of the variables those operations read or write.")
+    total_ops: int
+    truncated: bool = False
     resolution: str | None = Field(
         None,
         description="Set only when the target was resolved from a loose match (a partial name, "

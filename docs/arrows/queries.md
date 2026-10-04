@@ -1,10 +1,10 @@
 # Arrow: queries
 
-The read side of the server: 16 tools that list, search, decompile, disassemble, cross-reference, read bytes from, and graph an analyzed binary without changing it, disclosing loose target matches and marking partial results.
+The read side of the server: 22 tools that list, search, decompile, disassemble, cross-reference, relate callers and callees, diff, find similar functions, show p-code and data flow for, read bytes from, and graph an analyzed binary without changing it, disclosing loose target matches and marking partial results.
 
 ## Status
 
-**OK** — all 38 active specs implemented and covered by tests (2026-10-03); four items deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; implemented and audited at `7f8909c`.
+**OK** — all 52 active specs implemented and covered by tests (2026-10-04); four items deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; audited at `7f8909c`, extended for GUI mode and the analysis tools on 2026-10-04 (not yet committed).
 
 ## References
 
@@ -15,10 +15,11 @@ The read side of the server: 16 tools that list, search, decompile, disassemble,
 - docs/intent/queries/queries-design.md
 
 ### EARS
-- docs/intent/queries/queries-specs.md (38 specs, prefix `QRY-*`)
+- docs/intent/queries/queries-specs.md (52 specs, prefix `QRY-*`)
 
 ### Tests
 - `tests/test_queries.py` — every read tool against an in-memory program (`tests/program_fakes.py`), with stubbed Ghidra classes and `ghidrecomp`
+- `tests/test_analysis_tools.py` — call relations, comparison and similarity helpers, p-code bounds, data-flow errors, two-binary locking
 - `tests/test_category_guards.py` — missing `ghidrecomp` (QRY-025)
 - `tests/integration/test_ghidra_smoke.py` — real Ghidra: listing, decompile, disassembly (`CommentType`), disclosure, cross-references, bytes, strings, data items
 
@@ -36,6 +37,7 @@ The read side of the server: 16 tools that list, search, decompile, disassemble,
 1. Listings and searches — functions, segments, data items, classes, namespaces, imports, exports, symbols, strings.
 2. Code views — function by address, decompilation (120 s bound; failures are `stop`), disassembly (per-line errors), byte reads (partial and uninitialized handling).
 3. References and call graphs — references to a target or from an address; `ghidrecomp` call graphs.
+5. Call relations, comparison, p-code, data flow — callers/callees (through thunks, with indirect calls marked), normalized function diffs, mnemonic-3-gram fuzzy similarity (cached per program), raw and high p-code, decompiler data-flow slices.
 4. Disclosure — an optional `resolution` field on the four target-taking read results.
 
 ## Spec Coverage
@@ -47,9 +49,12 @@ The read side of the server: 16 tools that list, search, decompile, disassemble,
 | Code views | QRY-014 to QRY-020, QRY-030, QRY-033 to QRY-035, QRY-037, QRY-038 | 13 | 0 | 0 |
 | References | QRY-021 to QRY-026, QRY-036 | 7 | 0 | 0 |
 | Resolution disclosure | QRY-029 | 1 | 0 | 0 |
+| Call relations | QRY-039 to QRY-041 | 3 | 0 | 0 |
+| Function comparison | QRY-042 to QRY-047, QRY-052 | 7 | 0 | 0 |
+| P-code and data flow | QRY-048 to QRY-051 | 4 | 0 | 0 |
 | Query contract | QRY-027 to QRY-028 | 2 | 0 | 0 |
 
-**Summary:** 38 of 38 active specs implemented, all with tests; 0 gaps. No open questions; 4 items are deferred.
+**Summary:** 52 of 52 active specs implemented, all with tests; 0 gaps. No open questions; 4 items are deferred.
 
 ## Key Findings
 

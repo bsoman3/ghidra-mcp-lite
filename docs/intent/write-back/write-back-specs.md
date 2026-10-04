@@ -14,10 +14,11 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
 - [x] **WB-001**: When a write tool applies its mutation, the system shall perform the mutation inside a single Ghidra transaction.
 - [x] **WB-002**: If a write tool's mutation raises an error, then the system shall roll back the transaction, leaving the program unchanged.
-- [x] **WB-003**: When a write tool's mutation completes without error, the system shall commit the transaction and save the program to the project before returning.
+- [x] **WB-003**: When a write tool's mutation completes without error in headless mode, the system shall commit the transaction and save the program to the project before returning.
 - [x] **WB-004**: The system shall record every write-back edit with source type `USER_DEFINED`.
+- [x] **WB-028**: In GUI mode, the system shall apply each write's mutation through gui-host's GUI runner (GUI-023 to GUI-025) instead of committing and saving it as in headless mode.
 - [x] **WB-005**: The system shall resolve targets, decompile, and parse inputs before opening a write transaction, so that input errors do not open a transaction.
-- [x] **WB-022**: If saving the program fails after a write transaction has committed, then the system shall fail the call as `stop`, stating that the edit is applied in memory but not saved.
+- [x] **WB-022**: If, in headless mode, saving the program fails after a write transaction has committed, then the system shall fail the call as `stop`, stating that the edit is applied in memory but not saved.
 
 ## Comments
 

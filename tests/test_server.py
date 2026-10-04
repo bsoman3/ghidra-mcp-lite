@@ -26,6 +26,8 @@ EXPECTED_TOOLS = {
     "set_disassembly_comment", "set_decompiler_comment", "rename_function",
     "rename_function_by_address", "rename_data", "rename_variable",
     "set_function_prototype", "set_local_variable_type", "gen_callgraph", "reanalyze_binary",
+    "get_function_callers", "get_function_callees", "diff_functions", "find_similar_functions_fuzzy",
+    "get_function_pcode", "analyze_dataflow",
 }
 
 
@@ -569,3 +571,82 @@ async def test_program_tools_resolve_through_the_gate_before_delegating(fake_ctx
     assert result.is_error and "[retry_later]" in _text(result)
     assert ("get_program_info", "x") in fake_ctx.calls
     assert constructed == []
+
+
+# ── GUI mode (gui-host) ──────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def gui_cli(monkeypatch):
+    calls = {}
+    started = []
+    monkeypatch.setattr(server.gui, "check_port", lambda host, port: calls.setdefault("port", (host, port)))
+    monkeypatch.setattr(server.gui, "ensure_project", lambda d, n: calls.setdefault("project", (d, n)))
+    monkeypatch.setattr(server.gui, "launch", lambda **kw: calls.setdefault("launch", kw))
+    monkeypatch.setattr(server.pyghidra, "start", lambda *a, **k: started.append(True))
+    return calls, started, CliRunner()
+
+
+# @spec SRV-045, GUI-001, GUI-006
+def test_gui_mode_serves_over_streamable_http_and_returns_when_the_gui_exits(gui_cli, tmp_path):
+    calls, started, runner = gui_cli
+    result = runner.invoke(server.main, ["--gui", "--project-path", str(tmp_path / "p"), "--port", "8123"])
+    assert result.exit_code == 0, result.output
+    assert calls["port"] == ("127.0.0.1", 8123)
+    launch = calls["launch"]
+    assert (launch["host"], launch["port"]) == ("127.0.0.1", 8123)
+    assert launch["project_name"] == "my_project" and started == []  # the GUI launcher starts the JVM
+
+
+# @spec GUI-002
+@pytest.mark.parametrize("extra", [["--transport", "stdio"], ["--analyze-only"], ["--list-project-binaries"],
+                                   ["--delete-project-binary", "x"]])
+def test_gui_mode_rejects_stdio_and_one_shots(gui_cli, extra):
+    calls, started, runner = gui_cli
+    result = runner.invoke(server.main, ["--gui", *extra])
+    assert result.exit_code == 2
+    assert "launch" not in calls and started == []
+
+
+# @spec GUI-003
+def test_gui_mode_fails_fast_when_the_port_is_taken(gui_cli, monkeypatch):
+    calls, _, runner = gui_cli
+
+    def taken(host, port):
+        raise OSError("address already in use")
+
+    monkeypatch.setattr(server.gui, "check_port", taken)
+    result = runner.invoke(server.main, ["--gui"])
+    assert result.exit_code == 1 and "address already in use" in result.stderr
+    assert "launch" not in calls and "project" not in calls
+
+
+# @spec GUI-004
+def test_a_missing_project_is_created_headlessly_before_launch(monkeypatch, tmp_path):
+    from ghidra_mcp import gui
+
+    runs = []
+    monkeypatch.setattr(gui.subprocess, "run", lambda cmd, **kw: runs.append(cmd))
+    gui.ensure_project(str(tmp_path), "fresh")
+    assert runs and runs[0][1:3] == ["-m", "ghidra_mcp"]
+    assert ["--project-path", str(tmp_path), "--project-name", "fresh"] == runs[0][3:7]
+    (tmp_path / "fresh.gpr").write_text("")
+    runs.clear()
+    gui.ensure_project(str(tmp_path), "fresh")
+    assert runs == []
+
+
+# @spec GUI-026
+@pytest.mark.anyio
+async def test_gui_only_tools_are_registered_only_on_request(fake_ctx):
+    async with Client(server.mcp) as client:
+        headless = {t.name for t in (await client.list_tools()).tools}
+    assert not {"get_current_address", "get_current_function", "go_to"} & headless
+    server.register_gui_tools()
+    try:
+        async with Client(server.mcp) as client:
+            listed = {t.name for t in (await client.list_tools()).tools}
+        assert {"get_current_address", "get_current_function", "go_to"} <= listed
+    finally:
+        for name in ("get_current_address", "get_current_function", "go_to"):
+            server.mcp.remove_tool(name)

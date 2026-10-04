@@ -77,3 +77,10 @@ def test_console_script_and_module_entry_points():
     from ghidra_mcp import __version__
 
     assert __version__ in result.stdout
+
+
+# @spec GUI-022
+def test_readme_documents_gui_mode_and_its_analysis_blind_spot():
+    assert "--gui" in README
+    section = README.split("## GUI Mode", 1)[1].split("\n## ", 1)[0]
+    assert "analyzer failures" in section and "ready" in section

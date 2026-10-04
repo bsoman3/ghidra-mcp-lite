@@ -23,6 +23,10 @@ Principles:
 
 Analysis *configuration* (symbols, GDTs, analyzer options) belongs to analysis-config; this component stores each binary's analysis options and hands them over when the binary is analyzed. Name and address resolution *inside* a program belongs to resolution. This component resolves only *binary* names.
 
+## Hosts
+
+Project and program operations — opening or creating the project, registering programs, opening a program, importing, running analysis and reporting its progress, saving, and deleting — go through a host. The headless host is the behavior this document describes. GUI mode supplies the GUI host, owned by gui-host: it binds to the Ghidra GUI's project, delegates analysis to Ghidra's analysis manager, and never saves. Statuses, the gate, the registry, and the locks below apply in both modes.
+
 ## Runtime Record: `LoadedProgram`
 
 `LoadedProgram` is a dataclass with one instance per binary the context knows about, including a background import that has not reached the project yet:
@@ -41,6 +45,8 @@ Analysis *configuration* (symbols, GDTs, analyzer options) belongs to analysis-c
 | `failure`, `warnings` | Failure reason (status `failed`); configuration warnings recorded during the last analysis |
 | `reanalysis_requested`, `work_started` | A forced pass is pending; when the current import or analysis began |
 | `lock`, `settled` | The per-program re-entrant lock; an event set when the binary becomes `ready` or `failed` |
+| `similarity_index` | Queries' cached fuzzy-similarity features; cleared whenever the binary is analyzed |
+| `mutation_runner` | GUI mode: gui-host's write runner; unset in headless mode |
 
 Per-program setup (`_ensure_open`, `_setup_decompiler`): the decompiler takes its options from the program (`grabFromProgram`), allows a 100 MB payload (`setMaxPayloadMBytes(100)`), and is opened on the program immediately. The server's response model `models.ProgramInfo` is a separate type that the project listing builds from these records.
 
@@ -100,7 +106,7 @@ if the context is closing                 → stop
 if the binary is ready and no forced pass is pending → stop   (became ready on first use)
 open the program if needed
 options ← options supplied in this process, else the options stored with the program
-if a forced pass is pending or Ghidra says the program should be analyzed:
+if a forced pass is pending or Ghidra does not mark the program as analyzed:
     clear configuration warnings
     apply the binary's configuration and run auto-analysis   (analysis-config; FlatProgramAPI.analyzeAll)
     markProgramAnalyzed(program)
@@ -178,7 +184,7 @@ Under SDK 2.x, tool calls run on parallel worker threads, so serialization cover
 | Dedupe key | Unique name at project root | Content hash regardless of filename | *[inferred]* The name already embeds the hash prefix. |
 | Re-importing a binary already in the project | Skip it, keep its stored options, and tell the caller | Re-import; apply the new options silently | HLD tenet *Explicit over silent*: options passed with a skipped import would otherwise vanish unnoticed. `reanalyze_binary` is the way to change them. |
 | Startup analysis | Background by default; blocking only for `--analyze-only` | Always block until analyzed | The server must accept connections immediately; stdio clients time out on a blocked handshake. |
-| Re-analysis policy | Only if `shouldAskToAnalyze`, or re-analysis was requested for that binary with `reanalyze_binary` | Always re-analyze; a server-wide force flag | No re-analysis unless asked. Asking per binary avoids re-analyzing everything and needs no restart. |
+| Re-analysis policy | Only if Ghidra does not mark the program analyzed (`isAnalyzed`), or re-analysis was requested for that binary with `reanalyze_binary` | Always re-analyze; a server-wide force flag; Ghidra's `shouldAskToAnalyze` | No re-analysis unless asked. `shouldAskToAnalyze` is also false for a program merely marked "don't ask" (as GUI mode does before analysis), which would leave a cancelled GUI analysis unanalyzed forever. Asking per binary avoids re-analyzing everything and needs no restart. |
 | Analysis gate | Tools are refused until the binary is `ready` | Serve partially analyzed results | Results from a half-analyzed program are silently incomplete (HLD tenet *Explicit over silent*). |
 | Worker model | One single-worker queue for import and analysis, plus per-program, project-operations, and registry locks | Two independent single-worker pools; a global lock | Background project work never overlaps. Per-program locks keep calls on ready programs flowing while another program is analyzed; a global lock would stall them for minutes. |
 | Lock order | Program → project-operations → registry | Project lock first | Long operations already hold a program lock when they need a project call; taking the short-lived locks last means none is ever held across a long operation. |

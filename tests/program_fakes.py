@@ -157,6 +157,9 @@ class Function:
     def getThunkedFunction(self, recursive):  # noqa: N802
         return self.thunk_of
 
+    def getFunctionThunkAddresses(self, recursive):  # noqa: N802 - set by FakeProgram
+        return getattr(self, "thunk_addresses", None) or None
+
     def getSignature(self):  # noqa: N802
         return f"undefined {self.symbol.getName(True)}(void)"
 
@@ -323,12 +326,24 @@ class Data:
         return DataType(self._get(self.type_name))
 
 
+class FlowType(str):
+    def isCall(self):  # noqa: N802
+        return "CALL" in self
+
+    def isComputed(self):  # noqa: N802
+        return "COMPUTED" in self
+
+
 class Instruction:
     """An instruction; bytes or operands set to an Exception raise when read."""
 
-    def __init__(self, address, raw=b"\x90", mnemonic="NOP", operands=()):
+    def __init__(self, address, raw=b"\x90", mnemonic="NOP", operands=(), flow="FALL_THROUGH"):
         self.address = address if isinstance(address, Addr) else Addr(address)
         self.raw, self.mnemonic, self.operands = raw, mnemonic, operands
+        self.flow = FlowType(flow)
+
+    def getFlowType(self):  # noqa: N802
+        return self.flow
 
     def getAddress(self):  # noqa: N802
         return self.address
@@ -379,7 +394,7 @@ class Listing:
 
 class Reference:
     def __init__(self, from_addr, to_addr, ref_type="UNCONDITIONAL_CALL"):
-        self.from_addr, self.to_addr, self.ref_type = Addr(from_addr), Addr(to_addr), ref_type
+        self.from_addr, self.to_addr, self.ref_type = Addr(from_addr), Addr(to_addr), FlowType(ref_type)
 
     def getFromAddress(self):  # noqa: N802
         return self.from_addr
@@ -458,6 +473,8 @@ class FakeProgram:
     def __post_init__(self):
         # Every function has a symbol at its entry, as in Ghidra.
         self.symbols = [f.symbol for f in self.functions] + list(self.symbols)
+        for f in self.functions:
+            f.thunk_addresses = [t.entry for t in self.functions if t.thunk_of is f]
 
     def getAddressFactory(self):  # noqa: N802
         return AddressFactory()

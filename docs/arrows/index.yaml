@@ -11,30 +11,32 @@ taxonomy:
     - queries
     - write-back
   server: standalone
+  gui-mode:
+    - gui-host
 
 arrows:
   analysis-config:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-03
-    audited_sha: 7f8909c
+    audited: 2026-10-04
+    audited_sha: null
     blocks: [program-lifecycle]
     blockedBy: []
     detail: analysis-config.md
-    next: "None; all specs implemented and tested"
+    next: "None; all specs implemented and tested. audited_sha to be set at commit"
     drift: null
 
   program-lifecycle:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-03
-    audited_sha: 7f8909c
+    audited: 2026-10-04
+    audited_sha: null
     blocks: [server]
     blockedBy: [analysis-config]
     detail: program-lifecycle.md
-    next: "None; all specs implemented and tested"
+    next: "None; all specs implemented and tested. audited_sha to be set at commit"
     drift: null
 
   resolution:
@@ -53,34 +55,46 @@ arrows:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-03
-    audited_sha: 7f8909c
+    audited: 2026-10-04
+    audited_sha: null
     blocks: [server]
     blockedBy: [resolution]
     detail: queries.md
-    next: "Deferred: pagination contract, unbounded outputs, search_symbols shape, full scans (bounded responses goal)."
+    next: "Deferred: pagination contract, unbounded outputs, search_symbols shape, full scans (bounded responses goal). audited_sha to be set at commit"
     drift: null
 
   write-back:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-03
-    audited_sha: 7f8909c
+    audited: 2026-10-04
+    audited_sha: null
     blocks: [server]
     blockedBy: [resolution]
     detail: write-back.md
-    next: "None; all specs implemented and tested"
+    next: "None; all specs implemented and tested. audited_sha to be set at commit"
     drift: null
 
   server:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-03
-    audited_sha: 7f8909c
+    audited: 2026-10-04
+    audited_sha: null
     blocks: []
     blockedBy: [program-lifecycle, queries, write-back]
     detail: server.md
     next: "Deferred: search_strings offset (bounded responses goal)."
+    drift: null
+
+  gui-host:
+    status: OK
+    parent: null
+    sampled: 2026-10-03
+    audited: 2026-10-04
+    audited_sha: null
+    blocks: [server]
+    blockedBy: [program-lifecycle, write-back, resolution]
+    detail: gui-host.md
+    next: "None; all specs implemented and tested (GUI smoke suite on demand). audited_sha to be set at commit"
     drift: null

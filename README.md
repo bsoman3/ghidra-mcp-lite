@@ -1,6 +1,6 @@
 # ghidra-mcp-lite
 
-A lightweight MCP server for Ghidra headless analysis. Exposes 29 native Ghidra tools — decompilation, disassembly, cross-references, renaming, type setting, callgraphs, and more — with no ChromaDB, no ML model, and no vector indexing.
+A lightweight MCP server for Ghidra headless analysis. Exposes 35 native Ghidra tools (38 in [GUI mode](#gui-mode)) — decompilation, disassembly, cross-references, callers and callees, function diffs, fuzzy similarity search, p-code, data-flow slices, renaming, type setting, callgraphs, and more — with no ChromaDB, no ML model, and no vector indexing.
 
 Designed to run comfortably on a small VM (e.g. a t3.small) where embedding-based servers saturate the CPU on startup.
 
@@ -281,6 +281,28 @@ Or configure from the Cline panel: **MCP Servers → Edit MCP Settings**.
 
 ---
 
+## GUI Mode
+
+Run the server inside the Ghidra GUI to watch and steer the agent's work:
+
+```bash
+export GHIDRA_INSTALL_DIR=/opt/ghidra_12.1.4_PUBLIC
+ghidra-mcp --gui --project-path ~/ghidra_projects /path/to/binary
+claude mcp add --transport http ghidra http://127.0.0.1:8000/mcp   # in another terminal
+```
+
+`--gui` opens the Ghidra GUI in the server's own process with the project open, and serves MCP over streamable HTTP (`--host`/`--port` as usual). The tools work on the same in-memory programs CodeBrowser shows, so renames, comments, and types appear as the agent makes them.
+
+- **You own saving.** Edits are applied but not saved; each tool's reply says so. Every agent edit is its own entry in Ghidra's undo history (Edit → Undo), and you save with the rest of your work. Deleting a binary with unsaved changes is refused until you save or discard them.
+- **Analysis is Ghidra's own.** Imports and `reanalyze_binary` open the program in CodeBrowser as a new, non-current tab and run Ghidra's auto-analysis there, with its progress bar and cancel button. Cancelling marks the binary `failed` (retry with `reanalyze_binary`). Ghidra does not report analyzer failures to the server, so a binary whose analysis partly failed is listed as `ready`. Analysis you start yourself from the Analysis menu shows as `analyzing`. A program you import without analyzing is `failed` ("not analyzed yet") until `reanalyze_binary` analyzes it.
+- **Busy means retry.** A write is refused with `[retry_later]` while Ghidra has another change in progress on that program (such as auto-analysis), so the agent never mixes its edit into yours or into analysis.
+- **Three extra tools.** `get_current_address` and `get_current_function` report where your cursor is in the most recently focused CodeBrowser; `go_to` moves CodeBrowser to a binary, address, or symbol. They exist only in GUI mode.
+- **One project, one session.** GUI mode serves the project it opened; if you close or switch projects in the GUI, tool calls fail until you restart `ghidra-mcp --gui`. Closing the Ghidra GUI stops the server. stdio is not available in GUI mode.
+
+A Ghidra project can be open in only one process at a time, so a headless `ghidra-mcp` and a separately started Ghidra GUI cannot share a project; GUI mode is how to use both at once.
+
+---
+
 ## CLI Reference
 
 ```
@@ -299,6 +321,7 @@ ghidra-mcp [OPTIONS] [INPUT_PATHS]...
 | `--symbols-path` | auto | Local symbol store directory |
 | `--list-project-binaries` | — | Print all binaries in the project and exit |
 | `--delete-project-binary NAME` | — | Delete a binary from the project and exit |
+| `--gui` | off | GUI mode: open the Ghidra GUI in this process and serve over streamable HTTP alongside it (see [GUI Mode](#gui-mode)) |
 | `--analyze-only` | — | Import inputs, analyze every binary to completion, print each binary's status, and exit (non-zero if any failed) |
 
 Environment variables: `MCP_TRANSPORT`, `MCP_PORT`, `MCP_HOST`, `GHIDRA_INSTALL_DIR`.
@@ -327,8 +350,8 @@ Environment variables: `MCP_TRANSPORT`, `MCP_PORT`, `MCP_HOST`, `GHIDRA_INSTALL_
 | `list_classes` | Class namespaces (C++, ObjC) |
 | `list_namespaces` | All non-global namespaces |
 | `list_imports` | External symbols imported by the binary; regex-filterable |
-| `list_exports` | Symbols exported by the binary; regex-filterable |
-| `search_strings` | Case-insensitive substring search over all defined strings |
+| `list_exports` | The binary's entry points: exported symbols and the program entry; regex-filterable |
+| `search_strings` | Case-insensitive substring search over all defined strings (an empty query lists them all) |
 | `search_symbols` | Substring search over the full symbol table, including externals and default `DAT_…`/`LAB_…` labels |
 
 ### Function Lookup
@@ -374,6 +397,17 @@ Environment variables: `MCP_TRANSPORT`, `MCP_PORT`, `MCP_HOST`, `GHIDRA_INSTALL_
 | Tool | Description |
 |------|-------------|
 | `gen_callgraph` | MermaidJS call graph (calling or called direction; requires ghidrecomp) |
+
+### Analysis
+
+| Tool | Description |
+|------|-------------|
+| `get_function_callers` | Functions that call a function (including through its thunks), each with its call sites |
+| `get_function_callees` | Functions a function calls, with call sites; thunks name their real target; unresolved indirect calls listed separately |
+| `diff_functions` | Unified diff of two functions (same or different binaries) as decompiled C or disassembly, with a similarity ratio; address-derived names masked by default |
+| `find_similar_functions_fuzzy` | Rank a binary's functions by similarity to a given one (multiset Jaccard of instruction-mnemonic 3-grams; works across binaries) |
+| `get_function_pcode` | A function's p-code: per instruction (`raw`) or from the decompiler (`high`); bounded by `max_ops` |
+| `analyze_dataflow` | Backward or forward data-flow slice of a decompiler variable (e.g. `param_1`): the p-code operations and variables involved |
 
 ### Memory
 

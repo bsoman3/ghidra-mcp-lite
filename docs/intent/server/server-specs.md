@@ -19,7 +19,7 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 ## Command Line
 
 - [x] **SRV-001**: The system shall provide a `ghidra-mcp` console command, and `python -m ghidra_mcp`, that starts the MCP server.
-- [x] **SRV-002**: The system shall accept a transport option limited to `stdio` (default) and `streamable-http`, a port option (default 8000), and a host option (default `127.0.0.1`), each overridable by the `MCP_TRANSPORT`, `MCP_PORT`, and `MCP_HOST` environment variables respectively.
+- [x] **SRV-002**: The system shall accept a transport option limited to `stdio` (the default, except in GUI mode; GUI-001) and `streamable-http`, a port option (default 8000), and a host option (default `127.0.0.1`), each overridable by the `MCP_TRANSPORT`, `MCP_PORT`, and `MCP_HOST` environment variables respectively.
 - [x] **SRV-003**: When `--project-path` names a `.gpr` file, the system shall use the file's directory as the project directory and the file's stem as the project name, ignoring `--project-name`.
 - [x] **SRV-004**: Where `--project-path` and `--project-name` are not given, the system shall use `ghidra_projects` (relative to the working directory) as the project directory and `my_project` as the project name.
 - [x] **SRV-005**: If an input path given on the command line does not exist, then the system shall reject the command line before starting Ghidra.
@@ -40,13 +40,13 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 - [x] **SRV-013**: When input paths are given and no one-shot command is requested, the system shall import them into the project before starting project analysis and serving.
 - [x] **SRV-014**: When serving, the system shall start project analysis in the background and answer the MCP handshake immediately, whether or not `--wait-for-analysis` is set.
 - [x] **SRV-015**: When serving, the system shall run the selected transport, binding the HTTP transport to the configured host and port.
-- [x] **SRV-016**: When the server stops, the system shall close the Ghidra context.
+- [x] **SRV-016**: When the server stops in headless mode, the system shall close the Ghidra context.
 - [x] **SRV-017**: The system shall write log output to stderr.
 - [x] **SRV-038**: The system shall execute Ghidra-backed tool calls off the server's event loop, so that one long-running call does not stall other requests.
 
 ## Tool Surface
 
-- [x] **SRV-018**: The system shall register the 29 MCP tools listed in the server LLD's Tool Registry, each with a description and documented parameters.
+- [x] **SRV-018**: The system shall register, in every mode, the 35 MCP tools listed in the server LLD's Tool Registry as available in every mode, each with a description and documented parameters; GUI-only tools are registered per GUI-026.
 - [x] **SRV-019**: The system shall make the single Ghidra context available to every tool call through the MCP lifespan context.
 - [x] **SRV-020**: When any query or write-back tool is called, the system shall resolve its binary through the program-lifecycle analysis gate (LIFE-006 to LIFE-008) before delegating to the tool implementation.
 - [x] **SRV-021**: When `list_project_binaries` is called, the system shall return every registered binary and every in-progress background import, each with its name, source file path, load time, status (`importing`, `analyzing`, `ready`, or `failed`), failure reason when failed, configuration warnings recorded during analysis, and Ghidra metadata, regardless of analysis state.
@@ -71,6 +71,7 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
 - [x] **SRV-029**: The system shall declare `ghidrecomp` as an optional dependency, needed only for call-graph generation and PDB/symbol-server setup.
 - [x] **SRV-030**: The system shall report its version via `-v` / `--version`.
+- [x] **SRV-045**: The system shall accept a `--gui` flag that starts GUI mode, handled by gui-host (GUI-001 to GUI-008).
 - [x] **SRV-043**: The CLI shall not accept `--force-analysis`, `--no-symbols`, `--sym-file-path`, `--gdt`, or `--program-options`; per-binary analysis options are tool arguments.
 - [x] **SRV-034**: The README prerequisites shall state Ghidra 12.1 or later with JDK 21 or later and Python 3.11 through 3.14, and the package metadata shall require Python ≥ 3.11 and MCP Python SDK 2.x at version 2.3 or later.
 - [x] **SRV-040**: The package metadata shall declare `pydantic` and `jpype1` as direct dependencies, and the package version shall be defined in exactly one place.

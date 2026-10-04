@@ -4,10 +4,12 @@ No ChromaDB, no ML/embedding — all search uses Ghidra's own iterators and APIs
 """
 
 import contextlib
+import difflib
 import functools
 import logging
 import re
 import typing
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 
@@ -17,6 +19,15 @@ from ghidra_mcp.errors import STOP, Stop, classify
 from ghidra_mcp.models import (
     BytesReadResult,
     CallGraphDirection,
+    CallRelation,
+    DataflowResult,
+    FunctionCallees,
+    FunctionCallers,
+    FunctionDiff,
+    FunctionPcode,
+    PcodeOpInfo,
+    SimilarFunction,
+    SimilarFunctions,
     CallGraphDisplayType,
     CallGraphResult,
     CrossReferenceInfo,
@@ -52,6 +63,71 @@ T = typing.TypeVar("T")
 
 # Upper bound on one decompile_function call; a timeout is reported as a decompiler failure.
 DECOMPILE_TIMEOUT_SECONDS = 120
+MAX_PCODE_OPS = 20000
+MAX_DATAFLOW_OPS = 5000
+SIMILARITY_METHOD = "multiset Jaccard of instruction-mnemonic 3-grams (operands ignored), size-prefiltered"
+
+_AUTO_NAME = re.compile(r"\b(FUN|DAT|LAB|PTR|switchD)_[0-9a-fA-F]+\b")
+_AUTO_STRING = re.compile(r"\b([su])_\w*?[0-9a-fA-F]{4,}\b")
+_HEX_LITERAL = re.compile(r"\b0x[0-9a-fA-F]{4,}\b")
+
+
+# @spec QRY-043
+def normalize_listing(text: str, own_names: typing.Iterable[str] = ()) -> str:
+    """Mask what differs between copies of the same code at other addresses or in other
+    binaries: the function's own names, Ghidra's address-derived default names, and long
+    hexadecimal literals."""
+    for name in sorted({n for n in own_names if n}, key=len, reverse=True):
+        text = re.sub(rf"(?<![\w:]){re.escape(name)}(?!\w)", "<self>", text)
+    text = _AUTO_NAME.sub(lambda m: f"{m.group(1)}_*", text)
+    text = _AUTO_STRING.sub(lambda m: f"{m.group(1)}_*", text)
+    return _HEX_LITERAL.sub("0x*", text)
+
+
+# @spec QRY-044
+def diff_texts(a: str, b: str, label_a: str, label_b: str, context_lines: int) -> tuple[str, float, bool]:
+    """Unified diff, line-level similarity ratio, and identity of two texts."""
+    a_lines, b_lines = a.splitlines(), b.splitlines()
+    diff = "\n".join(difflib.unified_diff(a_lines, b_lines, fromfile=label_a, tofile=label_b,
+                                          n=context_lines, lineterm=""))
+    ratio = round(difflib.SequenceMatcher(None, a_lines, b_lines, autojunk=False).ratio(), 3)
+    return diff, ratio, a_lines == b_lines
+
+
+# @spec QRY-045
+def mnemonic_grams(mnemonics: typing.Sequence[str]) -> Counter:
+    """The multiset of 3-grams of a mnemonic sequence (a shorter sequence is one gram)."""
+    seq = [str(m) for m in mnemonics]
+    if len(seq) < 3:
+        return Counter({tuple(seq): 1}) if seq else Counter()
+    return Counter(tuple(seq[i:i + 3]) for i in range(len(seq) - 2))
+
+
+def multiset_jaccard(a: Counter, b: Counter) -> float:
+    keys = a.keys() | b.keys()
+    largest = sum(max(a[k], b[k]) for k in keys)
+    return round(sum(min(a[k], b[k]) for k in keys) / largest, 4) if largest else 0.0
+
+
+# @spec QRY-046
+def rank_similar(query_count: int, query_grams: Counter, candidates, *, limit: int, min_similarity: float,
+                 order: typing.Callable[[typing.Any], typing.Any] | None = None) -> list[tuple]:
+    """(key, instruction count, score) for candidates within half to double the query's size
+    and scoring at least min_similarity, highest first, ties by order(key)."""
+    scored = []
+    for key, count, grams in candidates:
+        if not (query_count / 2 <= count <= query_count * 2):
+            continue
+        score = multiset_jaccard(query_grams, grams)
+        if score >= min_similarity:
+            scored.append((key, count, score))
+    scored.sort(key=lambda t: (-t[2], order(t[0]) if order else t[0]))
+    return scored[:limit]
+
+
+def _check_max_ops(max_ops: int, ceiling: int) -> None:
+    if not 1 <= max_ops <= ceiling:
+        raise ValueError(f"max_ops must be between 1 and {ceiling}, not {max_ops}.")
 
 
 class ResolutionMode(str, Enum):
@@ -140,7 +216,11 @@ class GhidraTools:
         On success: commit and save to the project. A save failure raises Stop, saying the
         edit is applied in memory but not saved.
         On failure (body raises): roll back.
+        In GUI mode the program's mutation runner applies the change instead (gui-host).
         """
+        runner = getattr(self.program_info, "mutation_runner", None)
+        if runner is not None:  # @spec WB-028
+            return runner(self.program, description, body)
         tx = self.program.startTransaction(description)
         ok = False
         try:
@@ -1039,6 +1119,260 @@ class GhidraTools:
         return self._with_transaction(
             f"Set variable type {var_name} in {func.getName()}", _do
         )
+
+    # -------------------------------------------------------------------------
+    # Call relations, comparison, p-code, and data flow
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _label(func: "Function") -> tuple[str, str]:
+        return str(func.getName(True)), str(func.getEntryPoint())
+
+    @staticmethod
+    def _relations(groups: dict) -> list[CallRelation]:
+        named = sorted((g for k, g in groups.items() if k is not None), key=lambda g: g["order"])
+        unnamed = [groups[None]] if None in groups else []
+        return [
+            CallRelation(
+                name=g["name"], address=g["address"], thunk_of=g.get("thunk_of"),
+                call_sites=[site for _, site in sorted(g["sites"])],
+            )
+            for g in named + unnamed
+        ]
+
+    # @spec QRY-039
+    @handle_exceptions
+    def get_function_callers(self, name_or_address: str) -> FunctionCallers:
+        """Functions that call this one, directly or through its thunks."""
+        resolved = self.resolve_function(name_or_address, ResolutionMode.READ)
+        func = resolved.target
+        rm = self.program.getReferenceManager()
+        fm = self.program.getFunctionManager()
+        targets = [func.getEntryPoint(), *(func.getFunctionThunkAddresses(True) or [])]
+        groups: dict = {}
+        for target in targets:
+            for ref in rm.getReferencesTo(target):
+                if not ref.getReferenceType().isCall():
+                    continue
+                site = ref.getFromAddress()
+                caller = fm.getFunctionContaining(site)
+                key = str(caller.getEntryPoint()) if caller is not None else None
+                group = groups.setdefault(key, {
+                    "name": str(caller.getName(True)) if caller is not None else None,
+                    "address": key,
+                    "order": caller.getEntryPoint().getOffset() if caller is not None else -1,
+                    "sites": set(),
+                })
+                group["sites"].add((site.getOffset(), str(site)))
+        name, entry = self._label(func)
+        return FunctionCallers(function=name, address=entry, callers=self._relations(groups),
+                               resolution=resolved.note)
+
+    # @spec QRY-040, QRY-041
+    @handle_exceptions
+    def get_function_callees(self, name_or_address: str) -> FunctionCallees:
+        """Call targets of this function's instructions, and its unresolved indirect calls."""
+        resolved = self.resolve_function(name_or_address, ResolutionMode.READ)
+        func = resolved.target
+        listing = self.program.getListing()
+        rm = self.program.getReferenceManager()
+        fm = self.program.getFunctionManager()
+        groups: dict = {}
+        indirect: list[tuple[int, str]] = []
+        for instr in listing.getInstructions(func.getBody(), True):
+            site = instr.getAddress()
+            calls = [r for r in rm.getReferencesFrom(site) if r.getReferenceType().isCall()]
+            if not calls:
+                flow = instr.getFlowType()
+                if flow.isCall() and flow.isComputed():
+                    indirect.append((site.getOffset(), str(site)))
+                continue
+            for ref in calls:
+                target = ref.getToAddress()
+                callee = fm.getFunctionAt(target)
+                thunk_of = None
+                if callee is not None and callee.isThunk():
+                    thunked = callee.getThunkedFunction(True)
+                    thunk_of = str(thunked.getName(True)) if thunked is not None else None
+                group = groups.setdefault(str(target), {
+                    "name": str(callee.getName(True)) if callee is not None else None,
+                    "address": str(target),
+                    "order": target.getOffset(),
+                    "thunk_of": thunk_of,
+                    "sites": set(),
+                })
+                group["sites"].add((site.getOffset(), str(site)))
+        name, entry = self._label(func)
+        return FunctionCallees(function=name, address=entry, callees=self._relations(groups),
+                               indirect_call_sites=[s for _, s in sorted(indirect)], resolution=resolved.note)
+
+    def _function_text(self, func: "Function", view: str) -> str:
+        if view == "decompiled":
+            return self.decompile_function(func, DECOMPILE_TIMEOUT_SECONDS).code
+        lines = []
+        for instr in self.program.getListing().getInstructions(func.getBody(), True):
+            operands = ", ".join(instr.getDefaultOperandRepresentation(i) for i in range(instr.getNumOperands()))
+            lines.append(f"{instr.getMnemonicString()} {operands}".rstrip())
+        return "\n".join(lines)
+
+    # @spec QRY-042, QRY-043, QRY-044
+    @handle_exceptions
+    def diff_functions(self, function_a: str, function_b: str, other: "GhidraTools | None" = None,
+                       view: str = "decompiled", normalize: bool = True, context_lines: int = 3) -> FunctionDiff:
+        """Compare two functions, the second in another binary when other is given."""
+        if view not in ("decompiled", "disassembly"):
+            raise ValueError(f"view must be 'decompiled' or 'disassembly', not '{view}'.")
+        if context_lines < 0:
+            raise ValueError("context_lines must not be negative.")
+        other = other or self
+        resolved_a = self.resolve_function(function_a, ResolutionMode.READ)
+        resolved_b = other.resolve_function(function_b, ResolutionMode.READ)
+        func_a, func_b = resolved_a.target, resolved_b.target
+        text_a, text_b = self._function_text(func_a, view), other._function_text(func_b, view)
+        if normalize:
+            text_a = normalize_listing(text_a, [str(func_a.getName()), str(func_a.getName(True))])
+            text_b = normalize_listing(text_b, [str(func_b.getName()), str(func_b.getName(True))])
+        label_a = "{} @ {}".format(*self._label(func_a))
+        label_b = "{} @ {}".format(*other._label(func_b))
+        diff, ratio, identical = diff_texts(
+            text_a, text_b, f"{self.program_info.name}:{label_a}", f"{other.program_info.name}:{label_b}",
+            context_lines,
+        )
+        return FunctionDiff(
+            binary_a=self.program_info.name, function_a=label_a, binary_b=other.program_info.name,
+            function_b=label_b, view=view, normalized=normalize, identical=identical, similarity=ratio,
+            diff=diff, resolution_a=resolved_a.note, resolution_b=resolved_b.note,
+        )
+
+    # @spec QRY-047
+    def _similarity_index(self) -> dict:
+        """entry → (instruction count, mnemonic grams, qualified name, entry offset), computed
+        once per program and kept until the binary is next analyzed."""
+        index = self.program_info.similarity_index
+        if index is None:
+            index = {}
+            listing = self.program.getListing()
+            for func in self.get_all_functions(include_externals=False):
+                mnemonics = [str(i.getMnemonicString()) for i in listing.getInstructions(func.getBody(), True)]
+                entry = func.getEntryPoint()
+                index[str(entry)] = (len(mnemonics), mnemonic_grams(mnemonics), str(func.getName(True)),
+                                     entry.getOffset())
+            self.program_info.similarity_index = index
+        return index
+
+    # @spec QRY-045, QRY-046
+    @handle_exceptions
+    def find_similar_functions_fuzzy(self, name_or_address: str, target: "GhidraTools | None" = None,
+                                     limit: int = 10, min_similarity: float = 0.5) -> SimilarFunctions:
+        """Rank target's functions by similarity to this function."""
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        if not 0 <= min_similarity <= 1:
+            raise ValueError("min_similarity must be between 0 and 1.")
+        target = target or self
+        resolved = self.resolve_function(name_or_address, ResolutionMode.READ)
+        func = resolved.target
+        key = str(func.getEntryPoint())
+        query = self._similarity_index().get(key)
+        if query is None:  # a thunk or external query is not in the index
+            mnemonics = [str(i.getMnemonicString())
+                         for i in self.program.getListing().getInstructions(func.getBody(), True)]
+            query = (len(mnemonics), mnemonic_grams(mnemonics))
+        count, grams = query[0], query[1]
+        index = target._similarity_index()
+        same_program = target.program_info is self.program_info
+        candidates = [(k, v[0], v[1]) for k, v in index.items() if not (same_program and k == key)]
+        ranked = rank_similar(count, grams, candidates, limit=limit, min_similarity=min_similarity,
+                              order=lambda k: index[k][3])
+        name, entry = self._label(func)
+        return SimilarFunctions(
+            binary=self.program_info.name, function=name, address=entry, instruction_count=count,
+            target_binary=target.program_info.name, method=SIMILARITY_METHOD,
+            candidates=[SimilarFunction(name=index[k][2], address=k, similarity=score, instruction_count=n)
+                        for k, n, score in ranked],
+            scanned=len(candidates), resolution=resolved.note,
+        )
+
+    def _decompile_high(self, func: "Function"):
+        from ghidra.util.task import ConsoleTaskMonitor
+
+        result = self.decompiler.decompileFunction(func, DECOMPILE_TIMEOUT_SECONDS, ConsoleTaskMonitor())
+        error = result.getErrorMessage()
+        if error:
+            raise Stop(f"Decompilation of {self._func_label(func)} failed: {error}")
+        high = result.getHighFunction()
+        if high is None:
+            raise Stop(f"Decompilation of {self._func_label(func)} produced no result.")
+        return high
+
+    @staticmethod
+    def _op_info(op, address: str | None = None) -> PcodeOpInfo:
+        seq = op.getSeqnum()
+        return PcodeOpInfo(address=address or str(seq.getTarget()), seq=int(seq.getTime()),
+                           mnemonic=str(op.getMnemonic()), text=str(op))
+
+    # @spec QRY-048, QRY-049
+    @handle_exceptions
+    def get_function_pcode(self, name_or_address: str, form: str = "raw", max_ops: int = 2000) -> FunctionPcode:
+        """The function's raw (per-instruction) or high (decompiler) p-code."""
+        _check_max_ops(max_ops, MAX_PCODE_OPS)
+        if form not in ("raw", "high"):
+            raise ValueError(f"form must be 'raw' or 'high', not '{form}'.")
+        resolved = self.resolve_function(name_or_address, ResolutionMode.READ)
+        func = resolved.target
+        ops: list[PcodeOpInfo] = []
+        if form == "raw":
+            for instr in self.program.getListing().getInstructions(func.getBody(), True):
+                address = str(instr.getAddress())
+                ops.extend(self._op_info(op, address) for op in instr.getPcode())
+        else:
+            ops.extend(self._op_info(op) for op in self._decompile_high(func).getPcodeOps())
+        name, entry = self._label(func)
+        return FunctionPcode(function=name, address=entry, form=form, ops=ops[:max_ops], total_ops=len(ops),
+                             truncated=len(ops) > max_ops, resolution=resolved.note)
+
+    # @spec QRY-049, QRY-050, QRY-051
+    @handle_exceptions
+    def analyze_dataflow(self, function_name_or_address: str, variable: str, direction: str = "backward",
+                         max_ops: int = 500) -> DataflowResult:
+        """The backward or forward data-flow slice of a decompiler variable."""
+        _check_max_ops(max_ops, MAX_DATAFLOW_OPS)
+        if direction not in ("backward", "forward"):
+            raise ValueError(f"direction must be 'backward' or 'forward', not '{direction}'.")
+        resolved = self.resolve_function(function_name_or_address, ResolutionMode.READ)
+        func = resolved.target
+        high = self._decompile_high(func)
+        symbols = list(high.getLocalSymbolMap().getSymbols())
+        symbol = next((s for s in symbols if s.getName() == variable), None)
+        if symbol is None:
+            available = sorted(str(s.getName()) for s in symbols)
+            raise ValueError(f"Variable '{variable}' not found in '{func.getName()}'. Available: {available}")
+        high_variable = symbol.getHighVariable()
+        if high_variable is None:
+            raise ValueError(f"Variable '{variable}' has no data flow in the decompiled '{func.getName()}'.")
+
+        from ghidra.app.decompiler.component import DecompilerUtils
+
+        slice_ops = (DecompilerUtils.getBackwardSliceToPCodeOps if direction == "backward"
+                     else DecompilerUtils.getForwardSliceToPCodeOps)
+        unique: dict = {}
+        for varnode in high_variable.getInstances():
+            for op in slice_ops(varnode):
+                seq = op.getSeqnum()
+                target = seq.getTarget()
+                unique.setdefault((target.getOffset() if target is not None else -1, int(seq.getTime())), op)
+        ordered = [unique[k] for k in sorted(unique)]
+        names: set[str] = set()
+        for op in ordered:
+            for varnode in [*op.getInputs(), op.getOutput()]:
+                high_var = varnode.getHigh() if varnode is not None else None
+                if high_var is not None and high_var.getName():
+                    names.add(str(high_var.getName()))
+        ops = [self._op_info(op) for op in ordered]
+        name, entry = self._label(func)
+        return DataflowResult(function=name, address=entry, variable=variable, direction=direction,
+                              ops=ops[:max_ops], variables=sorted(names), total_ops=len(ops),
+                              truncated=len(ops) > max_ops, resolution=resolved.note)
 
     # -------------------------------------------------------------------------
     # Callgraph

@@ -19,8 +19,8 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
 ## Application Order
 
-- [x] **ACFG-003**: When auto-analysis of a program is about to run (the program is not yet marked analyzed, or re-analysis was requested for it), the system shall apply every GDT archive in that binary's options to the program inside a transaction, before `analyzeAll`, and shall not apply GDT archives to a program whose auto-analysis is skipped.
-- [x] **ACFG-004**: When auto-analysis of a program is about to run (the program is not yet marked analyzed, or re-analysis was requested for it), the system shall apply symbol configuration and analyzer-option configuration to that program immediately before `analyzeAll`.
+- [x] **ACFG-003**: When auto-analysis of a program is about to run (the program is not yet marked analyzed, or re-analysis was requested for it), the system shall apply every GDT archive in that binary's options to the program inside a transaction, before auto-analysis starts (`analyzeAll` in headless mode; Ghidra's analysis manager in GUI mode), and shall not apply GDT archives to a program whose auto-analysis is skipped.
+- [x] **ACFG-004**: When auto-analysis of a program is about to run (the program is not yet marked analyzed, or re-analysis was requested for it), the system shall apply symbol configuration and analyzer-option configuration to that program immediately before auto-analysis starts (`analyzeAll` in headless mode; Ghidra's analysis manager in GUI mode).
 
 ## Symbols / PDB
 

@@ -40,6 +40,8 @@ return result
 
 A body that raises rolls back and the exception propagates with its own category. A body whose Ghidra command reports failure raises `Stop` itself, so that case rolls back too.
 
+**Mutation runner.** The transaction-and-save step above is the headless runner. In GUI mode, gui-host supplies the runner instead: the mutation runs on the Swing thread as its own transaction, only when no other transaction is open on the program (else `retry_later`), and the edit is applied but not saved. Preparation, targets, messages, and failure categories are the same in both modes.
+
 ## Tool Catalogue
 
 | MCP tool | Implementation | Target resolution | Mutation | Success message |

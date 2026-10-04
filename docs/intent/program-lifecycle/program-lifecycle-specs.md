@@ -13,7 +13,7 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
 ## Project and Startup
 
-- [x] **LIFE-001**: When the Ghidra context is constructed, the system shall open the project named by the project name in the project directory if it exists, and otherwise create it, creating the directory if needed.
+- [x] **LIFE-001**: When the Ghidra context is constructed in headless mode, the system shall open the project named by the project name in the project directory if it exists, and otherwise create it, creating the directory if needed.
 - [x] **LIFE-002**: When the Ghidra context is constructed, the system shall register every Program-type file in the project under its project pathname without opening it.
 - [x] **LIFE-004**: When a program is opened or imported, the system shall create a dedicated decompiler for that program, configured from the program's options with a 100 MB maximum payload.
 - [x] **LIFE-005**: When a program is opened or imported, the system shall record its Ghidra metadata, its source file path (from the `Executable Location` metadata, when present), and the time it was opened.
@@ -49,9 +49,9 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 - [x] **LIFE-016**: When project analysis is started, the system shall run one analysis pass over every Program-type file in the project, on a single background worker.
 - [x] **LIFE-017**: When project analysis is started for serving, the system shall return immediately while the pass runs in the background. When it is started for `--analyze-only`, it shall block until the pass finishes.
 - [x] **LIFE-018**: If analysis of one program fails during a project analysis pass, then the system shall log the error and continue with the remaining programs.
-- [x] **LIFE-019**: When analyzing a program, the system shall run Ghidra auto-analysis only if Ghidra reports that the program should be analyzed, or re-analysis was requested for that program (LIFE-044), and shall otherwise skip auto-analysis.
-- [x] **LIFE-020**: When Ghidra auto-analysis of a program completes, the system shall mark the program as analyzed in Ghidra (`markProgramAnalyzed`) and save the program.
-- [x] **LIFE-021**: Where `--verbose-analysis` is set, the system shall run auto-analysis with a console task monitor.
+- [x] **LIFE-019**: When analyzing a program, the system shall run Ghidra auto-analysis only if Ghidra does not mark the program as analyzed, or re-analysis was requested for that program (LIFE-044), and shall otherwise skip auto-analysis.
+- [x] **LIFE-020**: When Ghidra auto-analysis of a program completes in headless mode, the system shall mark the program as analyzed in Ghidra (`markProgramAnalyzed`) and save the program.
+- [x] **LIFE-021**: Where `--verbose-analysis` is set in headless mode, the system shall run auto-analysis with a console task monitor.
 - [x] **LIFE-022**: When an analysis pass over a program finishes without error, whether auto-analysis ran or was skipped, the system shall mark the program analysis-complete so that tools may use it.
 - [x] **LIFE-023**: When a tool requests a registered program that Ghidra already marks as analyzed, and no re-analysis is pending for it, the system shall treat the program as ready without waiting for the background analysis pass.
 - [x] **LIFE-031**: If an analysis pass over a program raises, then the system shall mark the program `failed` and record the failure reason.
@@ -66,7 +66,7 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
 ## Per-binary Analysis Options and Re-analysis
 
-- [x] **LIFE-043**: The system shall keep each binary's analysis options (`pdb_path`, `gdts`, `analyzer_options`, `no_symbols`) with that binary, persist them with the program in the project, and provide them to analysis-config whenever the binary is analyzed. Binaries given on the command line or found in the project shall use default options.
+- [x] **LIFE-043**: The system shall keep each binary's analysis options (`pdb_path`, `gdts`, `analyzer_options`, `no_symbols`) with that binary, store them with the program in the project (persisted when the program is saved: immediately in headless mode, by the analyst in GUI mode), and provide them to analysis-config whenever the binary is analyzed. Binaries given on the command line or found in the project shall use default options.
 - [x] **LIFE-044**: When `reanalyze_binary` is called for a registered binary, the system shall replace its stored analysis options with those supplied (omitted ones reverting to defaults), clear any recorded failure and configuration warnings, set its status to `analyzing`, queue a forced analysis pass on the background worker, and return immediately.
 - [x] **LIFE-045**: If re-analysis is requested for a binary that is importing, or is queued for or undergoing analysis, then the system shall refuse with a `retry_later` failure.
 - [x] **LIFE-046**: If an analysis option names a PDB file or GDT archive that does not exist, then the system shall raise a `ValueError` naming the path before importing or queuing anything.
@@ -82,5 +82,5 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
 ## Shutdown and Resources
 
-- [x] **LIFE-029**: When the context is closed, the system shall cancel any in-flight analysis, wait for the background worker to stop, close each opened program without saving (logging and continuing past failures), and close the project.
+- [x] **LIFE-029**: When the context is closed in headless mode, the system shall cancel any in-flight analysis, wait for the background worker to stop, close each opened program without saving (logging and continuing past failures), and close the project.
 - [x] **LIFE-035**: When a program is deleted, or the context is closed, the system shall dispose of that program's decompiler.

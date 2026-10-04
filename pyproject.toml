@@ -38,4 +38,5 @@ line-length = 100
 testpaths = ["tests"]
 markers = [
     "integration: needs a Ghidra 12.1+ install (set GHIDRA_INSTALL_DIR)",
+    "gui: launches the Ghidra GUI; needs a display and GHIDRA_MCP_GUI_TESTS=1",
 ]

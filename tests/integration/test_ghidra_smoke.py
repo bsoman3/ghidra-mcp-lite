@@ -229,3 +229,59 @@ async def test_write_tools_against_ghidra(live_server, binaries, tmp_path):
         first = (await call("disassemble_function", name_or_address=entry))["instructions"][0]
         assert first["comment"] is None
         await call("set_decompiler_comment", address=entry, comment="computes a - b")
+
+
+def _ensure_imported(ctx, path):
+    from ghidra_mcp.context import AnalysisOptions
+
+    ctx.import_binaries([path], AnalysisOptions(no_symbols=True))
+    ctx.analyze_project(wait=True)
+
+
+# @spec QRY-039, QRY-040, QRY-042, QRY-044, QRY-045, QRY-046, QRY-048, QRY-050, QRY-052, QRY-009
+@pytest.mark.anyio
+async def test_analysis_tools_against_ghidra(live_server, binaries):
+    server, ctx = live_server
+    _ensure_imported(ctx, binaries[1])
+    hello, hello2 = _name_of(ctx, "hello"), _name_of(ctx, "hello2")
+    async with Client(server.mcp) as client:
+        async def call(tool, **arguments):
+            result = await client.call_tool(tool, arguments)
+            assert not result.is_error, (tool, _text(result))
+            return result.structured_content
+
+        add = next(f for f in (await call("list_functions", binary_name=hello, query="add"))["functions"]
+                   if f["name"].lstrip("_") == "add")
+        callers = await call("get_function_callers", binary_name=hello, name_or_address=add["address"])
+        caller = next(c for c in callers["callers"] if c["name"])
+        assert caller["call_sites"]
+        callees = await call("get_function_callees", binary_name=hello, name_or_address=caller["address"])
+        assert any(c["address"] == add["address"] for c in callees["callees"])
+
+        mul = next(f for f in (await call("list_functions", binary_name=hello2, query="mul"))["functions"]
+                   if f["name"].lstrip("_") == "mul")
+        same = await call("diff_functions", binary_name=hello, function_a=add["address"], function_b=add["address"])
+        assert same["identical"] and same["similarity"] == 1.0
+        diff = await call("diff_functions", binary_name=hello, function_a=add["address"],
+                          function_b=mul["address"], other_binary_name=hello2)
+        assert not diff["identical"] and 0 < diff["similarity"] < 1 and diff["diff"].startswith("---")
+        asm = await call("diff_functions", binary_name=hello, function_a=add["address"],
+                         function_b=mul["address"], other_binary_name=hello2, view="disassembly")
+        assert asm["view"] == "disassembly"
+
+        similar = await call("find_similar_functions_fuzzy", binary_name=hello2, name_or_address=mul["address"],
+                             target_binary_name=hello, min_similarity=0.3)
+        assert any(c["address"] == add["address"] for c in similar["candidates"]), similar
+
+        raw = await call("get_function_pcode", binary_name=hello, name_or_address=add["address"])
+        assert raw["ops"] and raw["total_ops"] >= len(raw["ops"])
+        high = await call("get_function_pcode", binary_name=hello, name_or_address=add["address"], form="high")
+        assert any(op["mnemonic"] in ("INT_ADD", "RETURN") for op in high["ops"]), high["ops"][:5]
+
+        flow = await call("analyze_dataflow", binary_name=hello, function_name_or_address=add["address"],
+                          variable="param_1", direction="forward")
+        assert flow["ops"] and "param_1" in flow["variables"], flow
+
+        # list_exports lists Ghidra's external entry points: exports and the program entry.
+        exports = await call("list_exports", binary_name=hello, limit=50)
+        assert any(e["name"] in ("entry", "_start") for e in exports["exports"]), exports
