@@ -1,0 +1,86 @@
+schema_version: 2
+last_updated: 2026-10-03
+
+# Lens: behavioral boundary (each segment owns a distinct set of rules/invariants).
+taxonomy:
+  lifecycle:
+    - program-lifecycle
+    - analysis-config
+  program-access:
+    - resolution
+    - queries
+    - write-back
+  server: standalone
+
+arrows:
+  analysis-config:
+    status: OK
+    parent: null
+    sampled: 2026-10-03
+    audited: 2026-10-03
+    audited_sha: null
+    blocks: [program-lifecycle]
+    blockedBy: []
+    detail: analysis-config.md
+    next: "None; all specs implemented and tested. audited_sha to be set when the working tree is committed"
+    drift: null
+
+  program-lifecycle:
+    status: OK
+    parent: null
+    sampled: 2026-10-03
+    audited: 2026-10-03
+    audited_sha: null
+    blocks: [server]
+    blockedBy: [analysis-config]
+    detail: program-lifecycle.md
+    next: "None; all specs implemented and tested. audited_sha to be set when the working tree is committed"
+    drift: null
+
+  resolution:
+    status: OK
+    parent: null
+    sampled: 2026-10-03
+    audited: 2026-10-03
+    audited_sha: null
+    blocks: [queries, write-back]
+    blockedBy: []
+    detail: resolution.md
+    next: "Deferred: bounded suggestion lists, result order, indexed lookups (bounded responses goal). audited_sha to be set when the working tree is committed"
+    drift: null
+
+  queries:
+    status: OK
+    parent: null
+    sampled: 2026-10-03
+    audited: 2026-10-03
+    audited_sha: null
+    blocks: [server]
+    blockedBy: [resolution]
+    detail: queries.md
+    next: "Deferred: pagination contract, unbounded outputs, search_symbols shape, full scans (bounded responses goal). audited_sha to be set when the working tree is committed"
+    drift: null
+
+  write-back:
+    status: OK
+    parent: null
+    sampled: 2026-10-03
+    audited: 2026-10-03
+    audited_sha: null
+    blocks: [server]
+    blockedBy: [resolution]
+    detail: write-back.md
+    next: "None; all specs implemented and tested. audited_sha to be set when the working tree is committed"
+    drift: null
+
+  server:
+    status: OK
+    parent: null
+    sampled: 2026-10-03
+    audited: 2026-10-03
+    audited_sha: null
+    blocks: []
+    blockedBy: [program-lifecycle, queries, write-back]
+    detail: server.md
+    next: "Deferred: search_strings offset (bounded responses goal). audited_sha to be set when the working tree is committed"
+    drift: null

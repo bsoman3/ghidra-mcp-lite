@@ -2,25 +2,24 @@
 Lightweight Ghidra MCP server.
 
 Native Ghidra tools only — no ChromaDB, no ML/embedding.
-Compatible with: stdio, streamable-http, sse transports.
+Transports: stdio and streamable-http (MCP Python SDK 2.x).
 """
 
-import json
 import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import click
 import pyghidra
-from mcp.server import Server
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.shared.exceptions import McpError
-from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, ErrorData
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from ghidra_mcp import __version__
-from ghidra_mcp.context import GhidraContext
+from ghidra_mcp.context import AnalysisOptions, GhidraContext
+from ghidra_mcp.errors import STOP, Stop, classify, describe
 from ghidra_mcp.models import (
     BytesReadResult,
     CallGraphDirection,
@@ -57,14 +56,42 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def _lifespan(server: Server) -> AsyncIterator[GhidraContext]:
+async def _lifespan(server: MCPServer) -> AsyncIterator[GhidraContext]:
     try:
         yield server._ghidra_context  # type: ignore[attr-defined]
     finally:
         pass
 
 
-mcp = FastMCP("ghidra-mcp", lifespan=_lifespan)  # type: ignore[arg-type]
+_CATEGORY_TAGS = ("[fix_input]", "[retry_later]", "[stop]")
+_SDK_PREFIX = "Error executing tool "
+
+
+def _tag_sdk_message(text: str) -> str:
+    """Add a recovery category to an error the SDK produced before or around a tool."""
+    if any(tag in text for tag in _CATEGORY_TAGS):
+        return text
+    if text.startswith(_SDK_PREFIX):
+        name, sep, detail = text[len(_SDK_PREFIX):].partition(": ")
+        if sep:  # argument rejected against the tool's input schema
+            return f"{_SDK_PREFIX}{name}: [fix_input] {detail}"
+        return f"{text}: [{STOP}] Internal error; details are in the server log."
+    return f"[fix_input] {text}"  # e.g. "Unknown tool: <name>"
+
+
+# @spec SRV-042
+async def _categorize_sdk_failures(ctx, call_next):
+    """Middleware: give SDK-generated tool errors (unknown tool, bad arguments) a category too."""
+    result = await call_next(ctx)
+    if ctx.method == "tools/call" and isinstance(result, dict) and result.get("isError"):
+        for block in result.get("content", []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                block["text"] = _tag_sdk_message(block.get("text", ""))
+                break
+    return result
+
+
+mcp = MCPServer("ghidra-mcp", lifespan=_lifespan, middleware=[_categorize_sdk_failures])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,12 +99,21 @@ mcp = FastMCP("ghidra-mcp", lifespan=_lifespan)  # type: ignore[arg-type]
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _err(e: Exception) -> McpError:
-    if isinstance(e, ValueError):
-        return McpError(ErrorData(code=INVALID_PARAMS, message=str(e)))
-    if isinstance(e, McpError):
+# @spec SRV-025, SRV-027, SRV-031, SRV-032, SRV-036
+def _err(e: Exception) -> ToolError:
+    """Convert a tool failure into a ToolError whose message starts with its recovery category.
+
+    The SDK shows a ToolError's message to the model; an unexpected exception's text is
+    withheld from the client and logged with its traceback instead.
+    """
+    if isinstance(e, ToolError):
         return e
-    return McpError(ErrorData(code=INTERNAL_ERROR, message=str(e)))
+    category = classify(e)
+    if category is None:
+        if not getattr(e, "_ghidra_mcp_logged", False):
+            logger.error(f"Unexpected tool failure: {e!s}", exc_info=e)
+        return ToolError(f"[{STOP}] Internal error; details are in the server log.")
+    return ToolError(f"[{category}] {describe(e)}")
 
 
 def _tools(ctx: Context, binary_name: str) -> GhidraTools:
@@ -94,21 +130,30 @@ def _tools(ctx: Context, binary_name: str) -> GhidraTools:
 def list_project_binaries(ctx: Context) -> ProgramInfos:
     """List every binary loaded in the active Ghidra project along with its analysis status.
 
-    Returns name, file path, load time, and whether Ghidra analysis has completed.
-    Use this first to discover binary names required by other tools.
+    Includes binaries still being imported. Each entry has a status (importing, analyzing,
+    ready, failed), the failure reason when failed, configuration warnings recorded during
+    analysis, and Ghidra metadata. Use this first to discover binary names required by other
+    tools.
     """
-    ghidra_ctx: GhidraContext = ctx.request_context.lifespan_context
-    programs = [
-        ProgramInfo(
-            name=pi.name,
-            file_path=str(pi.file_path) if pi.file_path else None,
-            load_time=pi.load_time,
-            analysis_complete=pi.analysis_complete,
-            metadata={},
-        )
-        for pi in ghidra_ctx.programs.values()
-    ]
-    return ProgramInfos(programs=programs)
+    # @spec SRV-021
+    try:
+        ghidra_ctx: GhidraContext = ctx.request_context.lifespan_context
+        programs = [
+            ProgramInfo(
+                name=pi.name,
+                file_path=str(pi.file_path) if pi.file_path else None,
+                load_time=pi.load_time,
+                analysis_complete=pi.analysis_complete,
+                status=pi.status.value,
+                failure=pi.failure,
+                warnings=list(pi.warnings),
+                metadata=dict(pi.metadata),
+            )
+            for pi in ghidra_ctx.list_entries()
+        ]
+        return ProgramInfos(programs=programs)
+    except Exception as e:
+        raise _err(e) from e
 
 
 @mcp.tool()
@@ -116,33 +161,58 @@ def list_project_binary_metadata(binary_name: str, ctx: Context) -> dict:
     """Retrieve detailed Ghidra metadata for a binary.
 
     Returns architecture, compiler, endianness, file hashes, function/symbol counts, etc.
+    Available whether or not analysis has finished.
 
     Args:
         binary_name: Name of the binary (from list_project_binaries).
     """
+    # @spec SRV-022
     try:
         ghidra_ctx: GhidraContext = ctx.request_context.lifespan_context
-        return ghidra_ctx.get_program_info(binary_name).metadata
+        return ghidra_ctx.get_metadata(binary_name)
     except Exception as e:
         raise _err(e) from e
 
 
+# @spec SRV-023
 @mcp.tool()
-def import_binary(binary_path: str, ctx: Context) -> str:
-    """Import a binary from disk into the Ghidra project and analyze it in the background.
+def import_binary(
+    binary_path: str,
+    ctx: Context,
+    pdb_path: str | None = None,
+    gdts: list[str] | None = None,
+    analyzer_options: dict[str, Any] | None = None,
+    no_symbols: bool = False,
+) -> str:
+    """Import a binary (or every file under a directory) and analyze it in the background.
 
-    When complete, the binary will appear in list_project_binaries with analysis_complete=true.
+    The analysis options apply to this binary only. list_project_binaries shows its status
+    (importing, analyzing, ready, failed) and any configuration warnings.
 
     Args:
-        binary_path: Absolute path to the binary file to import.
+        binary_path: Absolute path to the binary file (or directory) to import.
+        pdb_path: Path to a PDB file for this binary.
+        gdts: Paths of GDT type archives to apply, in order.
+        analyzer_options: Ghidra analysis options to set, as {option name: value},
+            e.g. {"Decompiler Parameter ID": false}.
+        no_symbols: Disable PDB symbol loading for this binary.
     """
     try:
         ghidra_ctx: GhidraContext = ctx.request_context.lifespan_context
-        ghidra_ctx.import_binary_backgrounded(binary_path)
-        return (
-            f"Importing '{binary_path}' in the background. "
-            "Use list_project_binaries to check analysis status."
+        options = AnalysisOptions.create(
+            no_symbols=no_symbols, pdb_path=pdb_path, gdts=gdts, analyzer_options=analyzer_options
         )
+        queued, existing = ghidra_ctx.import_binary_backgrounded(binary_path, options)
+        parts = []
+        if queued:
+            parts.append(f"Importing '{binary_path}' in the background as {', '.join(queued)}.")
+        if existing:
+            parts.append(
+                f"Already in the project, not re-imported: {', '.join(existing)}. Its stored "
+                "analysis options are unchanged; use reanalyze_binary to change them."
+            )
+        parts.append("Use list_project_binaries to check analysis status.")
+        return " ".join(parts)
     except Exception as e:
         raise _err(e) from e
 
@@ -158,11 +228,44 @@ def delete_project_binary(binary_name: str, ctx: Context) -> str:
         ghidra_ctx: GhidraContext = ctx.request_context.lifespan_context
         if ghidra_ctx.delete_program(binary_name):
             return f"Deleted: {binary_name}"
-        raise McpError(
-            ErrorData(code=INVALID_PARAMS, message=f"Could not delete '{binary_name}'")
+        raise Stop(f"Could not delete '{binary_name}'; see the server log for details.")
+    except Exception as e:
+        raise _err(e) from e
+
+
+# @spec SRV-044
+@mcp.tool()
+def reanalyze_binary(
+    binary_name: str,
+    ctx: Context,
+    pdb_path: str | None = None,
+    gdts: list[str] | None = None,
+    analyzer_options: dict[str, Any] | None = None,
+    no_symbols: bool = False,
+) -> str:
+    """Re-run Ghidra analysis of one binary in the background, with new analysis options.
+
+    The options replace the binary's previous ones (omitted options revert to defaults).
+    Also recovers a binary whose analysis failed. Refused while the binary is still being
+    imported or analyzed.
+
+    Args:
+        binary_name: Name of the binary (from list_project_binaries).
+        pdb_path: Path to a PDB file for this binary.
+        gdts: Paths of GDT type archives to apply, in order.
+        analyzer_options: Ghidra analysis options to set, as {option name: value}.
+        no_symbols: Disable PDB symbol loading for this binary.
+    """
+    try:
+        ghidra_ctx: GhidraContext = ctx.request_context.lifespan_context
+        options = AnalysisOptions.create(
+            no_symbols=no_symbols, pdb_path=pdb_path, gdts=gdts, analyzer_options=analyzer_options
         )
-    except McpError:
-        raise
+        ghidra_ctx.reanalyze_binary(binary_name, options)
+        return (
+            f"Re-analyzing '{binary_name}' in the background. "
+            "Use list_project_binaries to check its status."
+        )
     except Exception as e:
         raise _err(e) from e
 
@@ -180,7 +283,7 @@ def list_functions(
     offset: int = 0,
     limit: int = 100,
 ) -> FunctionList:
-    """List all functions in a binary with their addresses and signatures.
+    """List the binary's own functions (no externals or thunks) with addresses and signatures.
 
     Args:
         binary_name: Name of the binary.
@@ -222,14 +325,15 @@ def list_data_items(
 ) -> DataItems:
     """List defined data items (globals, structs, arrays, string data labels).
 
+    An item that can't be read is listed in 'failures', and the result is marked 'partial'.
+
     Args:
         binary_name: Name of the binary.
         offset: Number of results to skip (pagination).
         limit: Maximum number of results to return.
     """
     try:
-        items, total = _tools(ctx, binary_name).list_data_items(offset=offset, limit=limit)
-        return DataItems(items=items, total=total)
+        return _tools(ctx, binary_name).list_data_items(offset=offset, limit=limit)
     except Exception as e:
         raise _err(e) from e
 
@@ -309,7 +413,11 @@ def disassemble_function(
     """Get the assembly listing for a function.
 
     Returns every instruction in the function body with address, raw bytes, mnemonic,
-    operands, and any EOL comments.
+    operands, and any EOL comments. A field that can't be read is left empty and named in
+    that instruction's 'errors', and the result is marked 'partial'.
+    If no function's name matches exactly, a unique partial name match (or an address
+    inside a function) is used, and the result's 'resolution' field says so. Otherwise the
+    error lists the candidates.
 
     Args:
         binary_name: Name of the binary.
@@ -321,11 +429,17 @@ def disassemble_function(
         raise _err(e) from e
 
 
+# @spec SRV-038
 @mcp.tool()
-async def decompile_function(
+def decompile_function(
     binary_name: str, name_or_address: str, ctx: Context
 ) -> DecompiledFunction:
     """Decompile a function and return its pseudo-C source code.
+
+    Decompilation is limited to 120 seconds; a decompiler failure or timeout is an error.
+    If no function's name matches exactly, a unique partial name match (or an address
+    inside a function) is used, and the result's 'resolution' field says so. Otherwise the
+    error lists the candidates.
 
     Args:
         binary_name: Name of the binary containing the function.
@@ -348,7 +462,7 @@ def search_symbols(
     query: str,
     ctx: Context,
     offset: int = 0,
-    limit: int = 25,
+    limit: int = 100,
 ) -> SymbolSearchResults:
     """Search for symbols (functions, labels, globals, imports) by name substring.
 
@@ -374,7 +488,7 @@ def search_symbols(
 def list_imports(
     binary_name: str,
     ctx: Context,
-    query: str = ".*",
+    query: str | None = None,
     offset: int = 0,
     limit: int = 25,
 ) -> ImportInfos:
@@ -382,7 +496,7 @@ def list_imports(
 
     Args:
         binary_name: Name of the binary.
-        query: Regex pattern to filter import names (e.g. 'socket' or 'mem.*').
+        query: Optional case-insensitive regex to filter import names (e.g. 'socket' or 'mem.*').
         offset: Pagination offset.
         limit: Maximum results to return.
     """
@@ -398,7 +512,7 @@ def list_imports(
 def list_exports(
     binary_name: str,
     ctx: Context,
-    query: str = ".*",
+    query: str | None = None,
     offset: int = 0,
     limit: int = 25,
 ) -> ExportInfos:
@@ -406,7 +520,7 @@ def list_exports(
 
     Args:
         binary_name: Name of the binary.
-        query: Regex pattern to filter export names.
+        query: Optional case-insensitive regex to filter export names.
         offset: Pagination offset.
         limit: Maximum results to return.
     """
@@ -429,17 +543,17 @@ def list_cross_references(
 ) -> CrossReferenceInfos:
     """Find all cross-references (xrefs) TO a function, symbol, or address.
 
-    Useful for finding callers, data consumers, and jump targets.
-    If an exact match is not found the error message will suggest close matches.
+    Useful for finding callers, data consumers, and jump targets. A hex address is used as
+    is. Otherwise the target is the symbol whose name matches exactly, or the one symbol whose
+    name contains the query (reported in the 'resolution' field); if several match, the error
+    lists them. Each result's function_name is the function containing the reference's source.
 
     Args:
         binary_name: Name of the binary.
         name_or_address: Function/symbol name or hex address to find references to.
     """
     try:
-        return CrossReferenceInfos(
-            cross_references=_tools(ctx, binary_name).list_cross_references(name_or_address)
-        )
+        return _tools(ctx, binary_name).list_cross_references(name_or_address)
     except Exception as e:
         raise _err(e) from e
 
@@ -450,7 +564,9 @@ def get_xrefs_from(
 ) -> CrossReferenceInfos:
     """Find all references FROM a given address (calls/jumps/data refs originating here).
 
-    Complements list_cross_references which finds refs TO an address.
+    Complements list_cross_references which finds refs TO an address. Each result's
+    function_name is the function containing the reference's target address (the source
+    function is the same for every result).
 
     Args:
         binary_name: Name of the binary.
@@ -479,7 +595,8 @@ def search_strings(
     """Search for strings defined in a binary using a case-insensitive substring match.
 
     Uses Ghidra's native DefinedStringIterator — no ML model, no ChromaDB.
-    The 'total' field shows how many matches exist even if limit was reached.
+    The 'total' field shows how many matches exist even if limit was reached. A string that
+    can't be read is listed in 'failures', and the result is marked 'partial'.
 
     Args:
         binary_name: Name of the binary.
@@ -487,8 +604,7 @@ def search_strings(
         limit: Maximum number of results to return (default: 100).
     """
     try:
-        strings, total = _tools(ctx, binary_name).search_strings(query=query, limit=limit)
-        return StringSearchResults(strings=strings, total=total)
+        return _tools(ctx, binary_name).search_strings(query=query, limit=limit)
     except Exception as e:
         raise _err(e) from e
 
@@ -498,6 +614,9 @@ def read_bytes(
     binary_name: str, address: str, ctx: Context, size: int = 32
 ) -> BytesReadResult:
     """Read raw bytes from the binary's memory image at a given address.
+
+    If the range runs past the end of memory, the bytes that exist are returned and the result
+    is marked 'partial' (compare 'size' with 'requested_size'). Uninitialized memory is an error.
 
     Args:
         binary_name: Name of the binary.
@@ -521,12 +640,13 @@ def set_disassembly_comment(
 ) -> str:
     """Set an EOL comment at an address, visible in the disassembly listing.
 
-    Changes are saved to the Ghidra project immediately.
+    Replaces any existing EOL comment there; empty text removes it. Changes are saved to the
+    Ghidra project immediately.
 
     Args:
         binary_name: Name of the binary.
-        address: Hex address where the comment should appear.
-        comment: Comment text.
+        address: Hex address (in the program's memory) where the comment should appear.
+        comment: Comment text, or an empty string to remove the comment.
     """
     try:
         return _tools(ctx, binary_name).set_disassembly_comment(address, comment)
@@ -540,12 +660,13 @@ def set_decompiler_comment(
 ) -> str:
     """Set a PRE comment at an address, visible in the decompiler view as // comment.
 
-    Changes are saved to the Ghidra project immediately.
+    Replaces any existing PRE comment there; empty text removes it. Changes are saved to the
+    Ghidra project immediately.
 
     Args:
         binary_name: Name of the binary.
-        address: Hex address where the comment should appear.
-        comment: Comment text.
+        address: Hex address (in the program's memory) where the comment should appear.
+        comment: Comment text, or an empty string to remove the comment.
     """
     try:
         return _tools(ctx, binary_name).set_decompiler_comment(address, comment)
@@ -596,9 +717,11 @@ def rename_function_by_address(
 def rename_data(
     binary_name: str, address: str, new_name: str, ctx: Context
 ) -> str:
-    """Rename a data label at a given address.
+    """Rename the defined data at an address.
 
-    Creates a new label if none exists. Changes are saved immediately.
+    The address must hold defined data. Its primary symbol is renamed, unless the data has
+    no symbol or only a default one (e.g. DAT_00404010), in which case a label with the new
+    name is created. Changes are saved immediately.
 
     Args:
         binary_name: Name of the binary.
@@ -695,6 +818,7 @@ def set_local_variable_type(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# @spec SRV-039
 @mcp.tool()
 def gen_callgraph(
     binary_name: str,
@@ -702,18 +826,26 @@ def gen_callgraph(
     ctx: Context,
     direction: CallGraphDirection = CallGraphDirection.CALLING,
     display_type: CallGraphDisplayType = CallGraphDisplayType.FLOW,
+    include_refs: bool = True,
+    max_depth: int | None = None,
     condense_threshold: int = 50,
-    top_layers: int = 3,
-    bottom_layers: int = 3,
-    max_run_time: int = 120,
+    top_layers: int = 5,
+    bottom_layers: int = 5,
+    max_run_time: int = 60,
 ) -> CallGraphResult:
     """Generate a MermaidJS call graph for a function.
+
+    If no function's name matches exactly, a unique partial name match (or an address
+    inside a function) is used, and the result's 'resolution' field says so. Otherwise the
+    error lists the candidates.
 
     Args:
         binary_name: Name of the binary.
         function_name: Name or hex address of the target function.
         direction: 'calling' = functions this one calls; 'called' = callers of this function.
         display_type: Graph layout: 'flow', 'flow_ends', or 'mind'.
+        include_refs: Include non-call references as edges.
+        max_depth: Maximum depth to display (unlimited when omitted).
         condense_threshold: Number of edges before the graph is condensed.
         top_layers: Layers preserved at the top of a condensed graph.
         bottom_layers: Layers preserved at the bottom of a condensed graph.
@@ -724,6 +856,8 @@ def gen_callgraph(
             function_name_or_address=function_name,
             cg_direction=direction,
             cg_display_type=display_type,
+            include_refs=include_refs,
+            max_depth=max_depth,
             max_run_time=max_run_time,
             condense_threshold=condense_threshold,
             top_layers=top_layers,
@@ -741,9 +875,10 @@ def gen_callgraph(
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, "-v", "--version")
 # Transport
+# @spec SRV-002
 @click.option(
     "-t", "--transport",
-    type=click.Choice(["stdio", "streamable-http", "sse"], case_sensitive=False),
+    type=click.Choice(["stdio", "streamable-http"], case_sensitive=False),
     default="stdio", envvar="MCP_TRANSPORT", show_default=True,
     help="MCP transport protocol.",
 )
@@ -758,30 +893,25 @@ def gen_callgraph(
     help="Directory for the Ghidra project, or path to an existing .gpr file.",
 )
 @click.option("--project-name", default="my_project", show_default=True)
-# Analysis
-@click.option("--force-analysis/--no-force-analysis", default=False, show_default=True,
-              help="Re-analyze binaries even if already analyzed.")
-@click.option("--no-symbols/--with-symbols", default=False, show_default=True,
-              help="Disable PDB/symbol loading during analysis.")
+# Analysis (per-binary options are import_binary / reanalyze_binary arguments)
+# @spec SRV-008, SRV-043
 @click.option(
-    "--wait-for-analysis/--no-wait-for-analysis", default=False, show_default=True,
-    help="Block server startup until all binaries are fully analyzed.",
+    "--wait-for-analysis/--no-wait-for-analysis", default=True, show_default=True,
+    help="Let tool calls for a binary still being analyzed wait up to 45 s before "
+         "returning retry_later. Startup never blocks.",
 )
 @click.option("--verbose-analysis/--no-verbose-analysis", default=False, show_default=True,
               help="Verbose Ghidra analysis logging.")
 @click.option("--symbols-path", type=click.Path(), default=None,
               help="Path to local symbol store directory.")
-@click.option("--sym-file-path", type=click.Path(exists=True), default=None,
-              help="Path to a single PDB file for the binary.")
-@click.option("--gdt", type=click.Path(exists=True), multiple=True,
-              help="Path to a GDT file (can be repeated).")
-@click.option("--program-options", type=click.Path(exists=True), default=None,
-              help="JSON file with analyzer options.")
 # Project management (exits after running)
 @click.option("--list-project-binaries", is_flag=True,
               help="Print all binaries in the project and exit.")
 @click.option("--delete-project-binary", type=str, default=None,
               help="Delete a binary from the project by name and exit.")
+@click.option("--analyze-only", is_flag=True,
+              help="Import inputs, analyze every binary to completion, report each status, "
+                   "and exit (non-zero if any binary failed).")
 @click.argument("input_paths", type=click.Path(exists=True), nargs=-1)
 def main(
     transport: str,
@@ -789,16 +919,12 @@ def main(
     host: str,
     project_path: Path,
     project_name: str,
-    force_analysis: bool,
-    no_symbols: bool,
     wait_for_analysis: bool,
     verbose_analysis: bool,
     symbols_path: str | None,
-    sym_file_path: str | None,
-    gdt: tuple[str, ...],
-    program_options: str | None,
     list_project_binaries: bool,
     delete_project_binary: str | None,
+    analyze_only: bool,
     input_paths: tuple[str, ...],
 ) -> None:
     """Lightweight Ghidra MCP server — native Ghidra tools, no ML/embedding.
@@ -811,8 +937,11 @@ def main(
       # Import and serve a binary over stdio:
       ghidra-mcp /path/to/binary
 
-      # HTTP transport, wait for analysis before accepting requests:
-      ghidra-mcp --transport streamable-http --wait-for-analysis /path/to/binary
+      # Serve over HTTP for remote clients (tool calls wait up to 45 s for analysis):
+      ghidra-mcp --transport streamable-http --host 0.0.0.0 /path/to/binary
+
+      # Pre-analyze a large binary once, then serve instantly on later starts:
+      ghidra-mcp --analyze-only /path/to/binary
 
       # List binaries in an existing project:
       ghidra-mcp --project-path ./myproject --list-project-binaries
@@ -824,29 +953,25 @@ def main(
     else:
         project_dir = str(project_path)
 
-    prog_opts = None
-    if program_options:
-        with open(program_options) as f:
-            prog_opts = json.load(f)
-
     pyghidra.start(verbose_analysis)
 
     ctx = GhidraContext(
         project_name=project_name,
         project_path=project_dir,
-        force_analysis=force_analysis,
         verbose_analysis=verbose_analysis,
-        no_symbols=no_symbols,
-        gdts=list(gdt),
-        program_options=prog_opts,
         wait_for_analysis=wait_for_analysis,
         symbols_path=symbols_path,
-        sym_file_path=sym_file_path,
     )
 
     # One-shot management commands
+    # @spec SRV-009, SRV-033
     if list_project_binaries:
-        bins = ctx.list_binaries()
+        try:
+            bins = ctx.list_binaries()
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            ctx.close()
+            sys.exit(1)
         if bins:
             for name in bins:
                 click.echo(f"- {name}")
@@ -855,13 +980,22 @@ def main(
         ctx.close()
         return
 
+    # @spec SRV-010, SRV-011, SRV-012, SRV-033
     if delete_project_binary:
         try:
-            ctx.delete_program(delete_project_binary)
-            click.echo(f"Deleted: {delete_project_binary}")
+            deleted = ctx.delete_program(delete_project_binary)
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
+            ctx.close()
+            sys.exit(1)
         ctx.close()
+        if not deleted:
+            click.echo(
+                f"Error: could not delete '{delete_project_binary}'; see the log for details.",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo(f"Deleted: {delete_project_binary}")
         return
 
     # Import any binaries provided on the command line
@@ -869,25 +1003,35 @@ def main(
         logger.info(f"Importing {len(input_paths)} binary/binaries...")
         ctx.import_binaries([Path(p) for p in input_paths])
 
-    # Kick off analysis (background unless --wait-for-analysis)
+    # @spec SRV-035, SRV-033
+    if analyze_only:
+        ctx.analyze_project(wait=True)
+        any_failed = False
+        for pi in ctx.list_entries():
+            if pi.analysis_complete:
+                click.echo(f"{pi.name}: ready")
+            else:
+                any_failed = True
+                click.echo(f"{pi.name}: failed ({pi.failure or pi.status.value})")
+        ctx.close()
+        if any_failed:
+            sys.exit(1)
+        return
+
+    # @spec SRV-014: analysis runs in the background; the handshake is never delayed.
     ctx.analyze_project()
 
-    # Attach context to the FastMCP instance (read by _lifespan)
+    # Attach context to the server instance (read by _lifespan)
     mcp._ghidra_context = ctx  # type: ignore[attr-defined]
-    mcp.settings.port = port
-    mcp.settings.host = host
 
     logger.info(f"Starting server (transport={transport}, host={host}, port={port})")
 
+    # @spec SRV-015
     try:
         if transport == "stdio":
             mcp.run(transport="stdio")
-        elif transport in ("streamable-http", "http"):
-            mcp.run(transport="streamable-http")
-        elif transport == "sse":
-            mcp.run(transport="sse")
         else:
-            raise ValueError(f"Unknown transport: {transport}")
+            mcp.run(transport="streamable-http", host=host, port=port)
     finally:
         ctx.close()
 

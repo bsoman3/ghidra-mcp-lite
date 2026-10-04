@@ -3,19 +3,24 @@ Native Ghidra tool implementations.
 No ChromaDB, no ML/embedding — all search uses Ghidra's own iterators and APIs.
 """
 
+import contextlib
 import functools
 import logging
 import re
 import typing
+from dataclasses import dataclass
+from enum import Enum
 
 from jpype import JByte
 
+from ghidra_mcp.errors import STOP, Stop, classify
 from ghidra_mcp.models import (
     BytesReadResult,
     CallGraphDirection,
     CallGraphDisplayType,
     CallGraphResult,
     CrossReferenceInfo,
+    CrossReferenceInfos,
     DataItem,
     DataItems,
     DecompiledFunction,
@@ -24,11 +29,13 @@ from ghidra_mcp.models import (
     ExportInfo,
     FunctionInfo,
     ImportInfo,
+    ItemFailure,
     MemorySegment,
     MemorySegments,
     NamespaceInfo,
     NamespaceList,
     StringInfo,
+    StringSearchResults,
     SymbolInfo,
 )
 
@@ -37,18 +44,57 @@ if typing.TYPE_CHECKING:
     from ghidra.program.model.listing import Function
     from ghidra.program.model.symbol import Symbol
 
-    from ghidra_mcp.context import ProgramInfo
+    from ghidra_mcp.context import LoadedProgram
 
 logger = logging.getLogger(__name__)
 
+T = typing.TypeVar("T")
 
+# Upper bound on one decompile_function call; a timeout is reported as a decompiler failure.
+DECOMPILE_TIMEOUT_SECONDS = 120
+
+
+class ResolutionMode(str, Enum):
+    """Read tools may accept a unique loose match and disclose it; write tools need an exact one."""
+
+    READ = "read"
+    WRITE = "write"
+
+
+@dataclass(frozen=True)
+class Resolved(typing.Generic[T]):
+    """A resolved target, with a disclosure note when read mode accepted a loose match."""
+
+    target: T
+    note: str | None = None
+
+
+# @spec SRV-028, LIFE-041
 def handle_exceptions(func):
+    """Run a GhidraTools method under its program's lock; log a failure once, at a level
+    matching its recovery category, and re-raise."""
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        program_info = getattr(args[0], "program_info", None) if args else None
+        lock = getattr(program_info, "lock", None)
         try:
-            return func(*args, **kwargs)
+            with lock if lock is not None else contextlib.nullcontext():
+                return func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Error in {func.__name__}: {e!s}")
+            if getattr(e, "_ghidra_mcp_logged", False):
+                raise
+            category = classify(e)
+            if category is None:
+                logger.error(f"Error in {func.__name__}: {e!s}", exc_info=e)
+            elif category == STOP:
+                logger.warning(f"Error in {func.__name__}: {e!s}")
+            else:
+                logger.debug(f"Error in {func.__name__}: {e!s}")
+            try:
+                e._ghidra_mcp_logged = True  # type: ignore[attr-defined]
+            except Exception:
+                pass  # some exception types (e.g. Java proxies) reject new attributes
             raise
 
     return wrapper
@@ -57,7 +103,7 @@ def handle_exceptions(func):
 class GhidraTools:
     """All native Ghidra tool implementations."""
 
-    def __init__(self, program_info: "ProgramInfo"):
+    def __init__(self, program_info: "LoadedProgram"):
         self.program_info = program_info
         self.program = program_info.program
         self.project = program_info.project
@@ -68,7 +114,12 @@ class GhidraTools:
     # -------------------------------------------------------------------------
 
     def _func_label(self, func: "Function") -> str:
-        return f"{func.getSymbol().getName(True)[:50]}-{func.entryPoint}"
+        return f"{func.getSymbol().getName(True)}-{func.entryPoint}"
+
+    @staticmethod
+    def _error_text(e: Exception) -> str:
+        message = e.getMessage() if hasattr(e, "getMessage") else None
+        return str(message or e) or type(e).__name__
 
     def _parse_address(self, address: str):
         """Parse a hex address string (with or without 0x prefix) into a Ghidra Address."""
@@ -82,33 +133,42 @@ class GhidraTools:
             raise ValueError(f"Invalid address: {address}")
         return addr
 
+    # @spec WB-001, WB-002, WB-003, WB-022
     def _with_transaction(self, description: str, body: typing.Callable) -> typing.Any:
         """
         Run body() inside a Ghidra transaction.
-        On success: commit and save to the project.
-        On failure: roll back.
+        On success: commit and save to the project. A save failure raises Stop, saying the
+        edit is applied in memory but not saved.
+        On failure (body raises): roll back.
         """
         tx = self.program.startTransaction(description)
         ok = False
         try:
             result = body()
             ok = True
-            return result
         finally:
             self.program.endTransaction(tx, ok)
-            if ok:
-                self.project.save(self.program)
+        try:
+            self.project.save(self.program)
+        except Exception as e:
+            raise Stop(
+                f"{description}: the edit is applied in memory but not saved to the project: "
+                f"{self._error_text(e)}"
+            ) from e
+        return result
 
+    # @spec RES-014, RES-015, RES-023, RES-024
     def _resolve_data_type(self, type_str: str):
         """
         Resolve a C type string to a Ghidra DataType.
-        Tries direct lookup first, then CParser for complex/pointer types.
+        Tries a data-type-manager lookup, then CParser for declarations such as pointers,
+        then a scan by name that must match exactly one type.
         """
         from ghidra.app.util.cparser.C import CParser
 
         dtm = self.program.getDataTypeManager()
 
-        # Direct name lookup (handles built-ins: uint, char, int, void, etc.)
+        # Direct lookup by path (e.g. "/int", "/winnt.h/HANDLE")
         dt = dtm.getDataType(type_str)
         if dt is not None:
             return dt
@@ -116,119 +176,243 @@ class GhidraTools:
         # CParser handles "char *", "unsigned int", "struct Foo *", etc.
         parser = CParser(dtm)
         try:
-            return parser.parse(type_str + " __x;")
+            parsed = parser.parse(type_str + " __x;")
         except Exception:
-            pass
+            parsed = False  # not a declaration CParser understands; try the name scan
+        if parsed is None:
+            raise ValueError(f"Cannot resolve data type: '{type_str}' (the declaration names no type)")
+        if parsed is not False:
+            return parsed
 
-        # Last resort: scan all data types for name match
-        for dt in dtm.getAllDataTypes():
-            if dt.getName() == type_str:
-                return dt
-
+        # Last resort: the one data type with this name, in any category
+        matches = [dt for dt in dtm.getAllDataTypes() if dt.getName() == type_str]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            paths = ", ".join(dt.getPathName() for dt in matches)
+            raise ValueError(f"Ambiguous data type '{type_str}'. Did you mean: {paths}")
         raise ValueError(f"Cannot resolve data type: '{type_str}'")
 
     # -------------------------------------------------------------------------
     # Function resolution
     # -------------------------------------------------------------------------
 
+    def _try_address(self, text: str):
+        """The address a string parses as, or None. Ghidra accepts an optional 0x prefix."""
+        try:
+            return self.program.getAddressFactory().getAddress(text)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _function_label(func: "Function") -> str:
+        return f"{func.getSymbol().getName(True)} @ {func.getEntryPoint()}"
+
+    @staticmethod
+    def _same_function(a: "Function", b: "Function") -> bool:
+        return str(a.getEntryPoint()) == str(b.getEntryPoint())
+
+    # @spec RES-003, RES-004, RES-005, RES-006, RES-007, RES-018, RES-020, RES-021, RES-022, RES-025
     @handle_exceptions
-    def find_function(
-        self, name_or_address: str, include_externals: bool = True
-    ) -> "Function":
+    def resolve_function(self, name_or_address: str, mode: ResolutionMode) -> Resolved["Function"]:
         """
-        Resolve a function by hex address or name.
-        On ambiguity or near-miss, raises with suggestions.
+        Resolve a function from an address or a name (namespace-qualified, case-insensitive).
+
+        Both interpretations are considered; if they lead to different functions, the call
+        fails listing both. Read mode also accepts a unique partial name match or an address
+        inside a function, and discloses it in the note. Write mode accepts only an exact name
+        or an entry-point address, and refuses thunks and external functions.
         """
-        af = self.program.getAddressFactory()
         fm = self.program.getFunctionManager()
+        query = name_or_address
+        query_lc = query.lower()
 
-        # Try as address first
-        try:
-            addr = af.getAddress(name_or_address)
-            if addr:
-                func = fm.getFunctionAt(addr)
-                if func:
-                    return func
-        except Exception:
-            pass
+        addr = self._try_address(query)
+        at = fm.getFunctionAt(addr) if addr is not None else None
+        containing = None
+        if addr is not None and at is None:
+            containing = fm.getFunctionContaining(addr)
+        by_address = at or containing
 
-        functions = self.get_all_functions(include_externals=include_externals)
-        query_lc = name_or_address.lower()
-
-        exact = [f for f in functions if query_lc == f.getSymbol().getName(True).lower()]
+        functions = self.get_all_functions(include_externals=True)
+        exact = [f for f in functions if f.getSymbol().getName(True).lower() == query_lc]
+        partial = [] if exact else [
+            f for f in functions if query_lc in f.getSymbol().getName(True).lower()
+        ]
+        by_name, partial_match = None, False
         if len(exact) == 1:
-            return exact[0]
-        if len(exact) > 1:
-            hints = [f"{f.getSymbol().getName(True)} @ {f.getEntryPoint()}" for f in exact]
+            by_name = exact[0]
+        elif not exact and len(partial) == 1 and mode is ResolutionMode.READ:
+            by_name, partial_match = partial[0], True
+
+        if by_address is not None and by_name is not None and not self._same_function(by_address, by_name):
+            where = "is the entry of" if at is not None else "lies inside"
             raise ValueError(
-                f"Ambiguous match for '{name_or_address}'. Did you mean: {', '.join(hints)}"
+                f"'{query}' is both an address and a name: address {addr} {where} "
+                f"{self._function_label(by_address)}, and the name matches "
+                f"{self._function_label(by_name)}. Pass the entry address of the one you mean."
             )
 
-        partials = [f for f in functions if query_lc in f.getSymbol().getName(True).lower()]
-        if partials:
-            hints = [f"{f.getSymbol().getName(True)} @ {f.getEntryPoint()}" for f in partials]
+        if at is not None:
+            resolved = Resolved(at)
+        elif containing is not None:
+            if mode is ResolutionMode.READ:
+                resolved = Resolved(
+                    containing,
+                    f"'{query}' resolved to {self._function_label(containing)} "
+                    "(address inside the function)",
+                )
+            elif by_name is not None:  # the exact name names the same function
+                resolved = Resolved(by_name)
+            else:
+                raise ValueError(
+                    f"Write tools need a function's entry-point address; {addr} lies inside "
+                    f"{self._function_label(containing)}."
+                )
+        elif by_name is not None:
+            note = None
+            if partial_match:
+                note = f"'{query}' resolved to {self._function_label(by_name)} (partial name match)"
+            resolved = Resolved(by_name, note)
+        elif len(exact) > 1:
+            hints = ", ".join(self._function_label(f) for f in exact)
+            raise ValueError(f"Ambiguous match for '{query}'. Did you mean: {hints}")
+        elif partial:
+            hints = ", ".join(self._function_label(f) for f in partial)
+            raise ValueError(f"Function '{query}' not found. Did you mean: {hints}")
+        elif addr is not None and mode is ResolutionMode.WRITE:
             raise ValueError(
-                f"Function '{name_or_address}' not found. Did you mean: {', '.join(hints)}"
+                f"Function '{query}' not found: no function's name matches, and write tools need "
+                f"a function's entry-point address, but no function starts at {addr}."
             )
+        else:
+            raise ValueError(f"Function '{query}' not found.")
 
-        raise ValueError(f"Function '{name_or_address}' not found.")
+        if mode is ResolutionMode.WRITE:
+            self._refuse_thunk_or_external(query, resolved.target)
+        return resolved
 
-    def _lookup_symbols(
-        self,
-        name_or_address: str,
-        *,
-        exact: bool = True,
-        partial: bool = False,
-    ) -> list["Symbol"]:
-        st = self.program.getSymbolTable()
-        af = self.program.getAddressFactory()
-
-        # Try as address
-        try:
-            addr = af.getAddress(name_or_address)
-            if addr:
-                syms = list(st.getSymbols(addr))
-                if syms:
-                    return syms
-        except Exception:
-            pass
-
-        query_lc = name_or_address.lower()
-        base = self.get_all_symbols(include_externals=True)
-        matches: set = set()
-
-        if exact:
-            matches.update(s for s in base if query_lc == s.getName(True).lower())
-        if partial:
-            matches.update(s for s in base if query_lc in s.getName(True).lower())
-
-        return list(matches)
+    def _refuse_thunk_or_external(self, query: str, func: "Function") -> None:
+        if func.isThunk():
+            target = func.getThunkedFunction(True)
+            target_label = self._function_label(target) if target is not None else "an unknown function"
+            raise ValueError(
+                f"'{query}' is a thunk for {target_label}; write tools don't act on thunks. "
+                "Target the thunked function instead."
+            )
+        if func.isExternal():
+            raise ValueError(
+                f"'{query}' is an external function ({self._function_label(func)}) with no body "
+                "in this program; write tools don't act on external functions."
+            )
 
     @handle_exceptions
-    def find_symbol(self, name_or_address: str) -> "Symbol":
-        """Resolve a single symbol, raising on ambiguity."""
-        matches = self._lookup_symbols(name_or_address, exact=True, partial=True)
-        if len(matches) == 1:
-            return matches[0]
-        if len(matches) > 1:
-            hints = [f"{s.getName(True)} @ {s.getAddress()}" for s in matches]
+    def find_function(self, name_or_address: str) -> "Function":
+        """Resolve a function for a write tool: exact matches only (resolution's write mode)."""
+        return self.resolve_function(name_or_address, ResolutionMode.WRITE).target
+
+    # -------------------------------------------------------------------------
+    # Symbol resolution
+    # -------------------------------------------------------------------------
+
+    def _symbols_by_name(self) -> list["Symbol"]:
+        return self.get_all_symbols(include_externals=True, include_dynamic=True)
+
+    @staticmethod
+    def _symbol_label(sym: "Symbol") -> str:
+        return f"{sym.getName(True)} @ {sym.getAddress()}"
+
+    @staticmethod
+    def _by_address(symbols: list["Symbol"]) -> dict[str, "Symbol"]:
+        """One representative symbol per address, in order."""
+        grouped: dict[str, "Symbol"] = {}
+        for sym in symbols:
+            grouped.setdefault(str(sym.getAddress()), sym)
+        return grouped
+
+    # @spec RES-008, RES-009, RES-010, RES-011, RES-012, RES-019, RES-022, RES-026
+    @handle_exceptions
+    def resolve_reference_target(self, name_or_address: str) -> Resolved[typing.Any]:
+        """
+        Resolve the target address of a cross-reference lookup.
+
+        A string that parses as an address in the program (in memory, or with symbols defined
+        there) is its own target, however many symbols are defined there. Otherwise the target
+        is the address of the one symbol (dynamic and external ones included) whose qualified
+        name equals the query case-insensitively, or, disclosed, the one whose name contains it.
+        If the address and a name lead to different targets, the call fails listing both.
+        """
+        query = name_or_address
+        query_lc = query.lower()
+        st = self.program.getSymbolTable()
+
+        addr = self._try_address(query)
+        if addr is not None and not (
+            self.program.getMemory().contains(addr) or list(st.getSymbols(addr))
+        ):
+            addr = None
+
+        symbols = self._symbols_by_name()
+        exact = self._by_address([s for s in symbols if s.getName(True).lower() == query_lc])
+        partial = {} if exact else self._by_address(
+            [s for s in symbols if query_lc in s.getName(True).lower()]
+        )
+        by_name, partial_match = None, False
+        if len(exact) == 1:
+            by_name = next(iter(exact.values()))
+        elif not exact and len(partial) == 1:
+            by_name, partial_match = next(iter(partial.values())), True
+
+        if addr is not None and by_name is not None and str(by_name.getAddress()) != str(addr):
             raise ValueError(
-                f"Ambiguous match for '{name_or_address}'. Did you mean: {', '.join(hints)}"
+                f"'{query}' is both an address and a name: address {addr}, and the name matches "
+                f"{self._symbol_label(by_name)}. Pass the address you mean."
             )
-        raise ValueError(f"Symbol '{name_or_address}' not found.")
+        if addr is not None:
+            return Resolved(addr)
+        if by_name is not None:
+            note = None
+            if partial_match:
+                note = f"'{query}' resolved to {self._symbol_label(by_name)} (partial name match)"
+            return Resolved(by_name.getAddress(), note)
+        if len(exact) > 1:
+            hints = ", ".join(self._symbol_label(s) for s in exact.values())
+            raise ValueError(f"Ambiguous match for '{query}'. Did you mean: {hints}")
+        if partial:
+            hints = ", ".join(self._symbol_label(s) for s in partial.values())
+            raise ValueError(f"Symbol '{query}' not found. Did you mean: {hints}")
+        raise ValueError(f"Symbol '{query}' not found.")
+
+    # @spec RES-013
+    def _lookup_symbols(self, query: str) -> list["Symbol"]:
+        """Symbols for a search: those whose qualified name equals or contains the query
+        (case-insensitively), external and dynamic ones included, plus every symbol defined
+        at the query's address when it parses as one."""
+        query_lc = query.lower()
+        found: list["Symbol"] = []
+        addr = self._try_address(query)
+        if addr is not None:
+            found.extend(self.program.getSymbolTable().getSymbols(addr))
+        found.extend(s for s in self._symbols_by_name() if query_lc in s.getName(True).lower())
+
+        unique: dict[tuple[str, str], "Symbol"] = {}
+        for sym in found:
+            unique.setdefault((sym.getName(True), str(sym.getAddress())), sym)
+        return list(unique.values())
 
     # -------------------------------------------------------------------------
     # Core listing helpers (return raw Ghidra objects)
     # -------------------------------------------------------------------------
 
+    # @spec RES-016
     @handle_exceptions
     def get_all_functions(self, include_externals: bool = False) -> list["Function"]:
+        """Every function. Without externals, both external and thunk functions are left out."""
         fm = self.program.getFunctionManager()
-        return [
-            f
-            for f in fm.getFunctions(True)
-            if include_externals or (not f.isExternal() and not f.thunk)
-        ]
+        functions = list(fm.getFunctions(True))  # every non-external function, thunks included
+        if include_externals:
+            return functions + list(fm.getExternalFunctions())
+        return [f for f in functions if not f.isExternal() and not f.thunk]
 
     @handle_exceptions
     def get_all_symbols(
@@ -293,33 +477,34 @@ class GhidraTools:
             )
         return segments
 
+    # @spec QRY-005, QRY-031
     @handle_exceptions
-    def list_data_items(
-        self, offset: int = 0, limit: int = 100
-    ) -> tuple[list[DataItem], int]:
-        """List defined data items (labels, globals, structs, strings-as-data)."""
+    def list_data_items(self, offset: int = 0, limit: int = 100) -> DataItems:
+        """List defined data items (labels, globals, structs, strings-as-data).
+
+        An item that can't be read is reported in failures, and the result is marked partial.
+        """
         listing = self.program.getListing()
         results: list[DataItem] = []
+        failures: list[ItemFailure] = []
         total = 0
-
         for data in listing.getDefinedData(True):
             try:
                 label = str(data.getLabel()) if data.getLabel() else str(data.getAddress())
                 val = data.getValue()
-                total += 1
-                if total > offset and len(results) < limit:
-                    results.append(
-                        DataItem(
-                            label=label,
-                            address=str(data.getAddress()),
-                            type=str(data.getDataType().getName()),
-                            value=str(val) if val is not None else "",
-                        )
-                    )
+                item = DataItem(
+                    label=label,
+                    address=str(data.getAddress()),
+                    type=str(data.getDataType().getName()),
+                    value=str(val) if val is not None else "",
+                )
             except Exception as e:
-                logger.debug(f"Skipping data item: {e}")
-
-        return results, total
+                failures.append(ItemFailure(address=str(data.getAddress()), error=self._error_text(e)))
+                continue
+            total += 1
+            if total > offset and len(results) < limit:
+                results.append(item)
+        return DataItems(items=results, total=total, partial=bool(failures), failures=failures)
 
     @handle_exceptions
     def list_classes(
@@ -392,64 +577,75 @@ class GhidraTools:
     # Decompilation tools
     # -------------------------------------------------------------------------
 
+    # @spec QRY-016, QRY-029
     @handle_exceptions
     def decompile_function_by_name_or_addr(self, name_or_address: str) -> DecompiledFunction:
-        func = self.find_function(name_or_address)
-        return self.decompile_function(func)
+        resolved = self.resolve_function(name_or_address, ResolutionMode.READ)
+        result = self.decompile_function(resolved.target, DECOMPILE_TIMEOUT_SECONDS)
+        return result.model_copy(update={"resolution": resolved.note})
 
-    def decompile_function(self, func: "Function", timeout: int = 0) -> DecompiledFunction:
+    # @spec QRY-017, QRY-035, QRY-038
+    def decompile_function(self, func: "Function", timeout: int = DECOMPILE_TIMEOUT_SECONDS) -> DecompiledFunction:
+        """Decompile a function; a decompiler failure (including a timeout) raises Stop."""
         from ghidra.util.task import ConsoleTaskMonitor
 
         result: "DecompileResults" = self.decompiler.decompileFunction(
             func, timeout, ConsoleTaskMonitor()
         )
-        if result.getErrorMessage() == "":
-            code = result.decompiledFunction.getC()
-            sig = result.decompiledFunction.getSignature()
-        else:
-            code = result.getErrorMessage()
-            sig = None
-        return DecompiledFunction(name=self._func_label(func), code=code, signature=sig)
+        error = result.getErrorMessage()
+        if error:
+            raise Stop(f"Decompilation of {self._func_label(func)} failed: {error}")
+        decompiled = result.decompiledFunction
+        if decompiled is None:
+            raise Stop(f"Decompilation of {self._func_label(func)} produced no result.")
+        return DecompiledFunction(
+            name=self._func_label(func), code=decompiled.getC(), signature=decompiled.getSignature()
+        )
 
+    # @spec QRY-018, QRY-029, QRY-030, QRY-037
     @handle_exceptions
     def disassemble_function(self, name_or_address: str) -> DisassemblyResult:
-        """Return the assembly listing for a function."""
-        from ghidra.program.model.listing import CodeUnit
+        """Return the assembly listing for a function.
 
-        func = self.find_function(name_or_address)
+        A field that can't be read is left empty and named in that line's errors, and the
+        result is marked partial.
+        """
+        from ghidra.program.model.listing import CommentType
+
+        resolved = self.resolve_function(name_or_address, ResolutionMode.READ)
+        func = resolved.target
         listing = self.program.getListing()
-        body = func.getBody()
         instructions: list[DisassemblyLine] = []
 
-        for instr in listing.getInstructions(body, True):
+        for instr in listing.getInstructions(func.getBody(), True):
+            errors: list[str] = []
             try:
-                raw = bytes([b & 0xFF for b in instr.getBytes()])
-                instr_bytes = raw.hex()
-            except Exception:
+                instr_bytes = bytes([b & 0xFF for b in instr.getBytes()]).hex()
+            except Exception as e:
                 instr_bytes = ""
+                errors.append(f"bytes: {self._error_text(e)}")
 
-            mnemonic = instr.getMnemonicString()
             operand_parts = []
             try:
                 for i in range(instr.getNumOperands()):
                     operand_parts.append(instr.getDefaultOperandRepresentation(i))
-            except Exception:
-                pass
-            operands = ", ".join(operand_parts)
+            except Exception as e:
+                errors.append(f"operands: {self._error_text(e)}")
 
             comment = None
             try:
-                comment = listing.getComment(CodeUnit.EOL_COMMENT, instr.getAddress())
-            except Exception:
-                pass
+                comment = listing.getComment(CommentType.EOL, instr.getAddress())
+            except Exception as e:
+                errors.append(f"comment: {self._error_text(e)}")
 
             instructions.append(
                 DisassemblyLine(
                     address=str(instr.getAddress()),
                     bytes=instr_bytes,
-                    mnemonic=mnemonic,
-                    operands=operands,
+                    mnemonic=instr.getMnemonicString(),
+                    operands=", ".join(operand_parts),
                     comment=comment,
+                    errors=errors,
                 )
             )
 
@@ -457,6 +653,8 @@ class GhidraTools:
             function_name=func.getSymbol().getName(True),
             address=str(func.getEntryPoint()),
             instructions=instructions,
+            partial=any(line.errors for line in instructions),
+            resolution=resolved.note,
         )
 
     # -------------------------------------------------------------------------
@@ -470,7 +668,7 @@ class GhidraTools:
         if not query:
             raise ValueError("query is required")
 
-        symbols = self._lookup_symbols(query, exact=True, partial=True)
+        symbols = self._lookup_symbols(query)
         rm = self.program.getReferenceManager()
         results: list[SymbolInfo] = []
 
@@ -520,15 +718,16 @@ class GhidraTools:
     # Cross-reference tools
     # -------------------------------------------------------------------------
 
+    # @spec QRY-021, QRY-029
     @handle_exceptions
-    def list_cross_references(self, name_or_address: str) -> list[CrossReferenceInfo]:
+    def list_cross_references(self, name_or_address: str) -> CrossReferenceInfos:
         """All references TO a symbol or address."""
-        sym = self.find_symbol(name_or_address)
+        resolved = self.resolve_reference_target(name_or_address)
         rm = self.program.getReferenceManager()
         fm = self.program.getFunctionManager()
         refs: list[CrossReferenceInfo] = []
 
-        for ref in rm.getReferencesTo(sym.getAddress()):
+        for ref in rm.getReferencesTo(resolved.target):
             from_func = fm.getFunctionContaining(ref.getFromAddress())
             refs.append(
                 CrossReferenceInfo(
@@ -538,7 +737,7 @@ class GhidraTools:
                     type=str(ref.getReferenceType()),
                 )
             )
-        return refs
+        return CrossReferenceInfos(cross_references=refs, resolution=resolved.note)
 
     @handle_exceptions
     def get_xrefs_from(self, address: str) -> list[CrossReferenceInfo]:
@@ -564,39 +763,37 @@ class GhidraTools:
     # String / bytes tools
     # -------------------------------------------------------------------------
 
+    # @spec QRY-010, QRY-011, QRY-032
     @handle_exceptions
-    def search_strings(
-        self, query: str, limit: int = 100
-    ) -> tuple[list[StringInfo], int]:
+    def search_strings(self, query: str, limit: int = 100) -> StringSearchResults:
         """
         Search defined strings using Ghidra's DefinedStringIterator.
         Simple case-insensitive substring match — no ChromaDB, no ML model.
+        A string whose value can't be read is reported in failures, and the result is marked partial.
         """
-        try:
-            from ghidra.program.util import DefinedStringIterator  # Ghidra >= 11.3.3
-
-            iterator = DefinedStringIterator.forProgram(self.program)
-        except ImportError:
-            from ghidra.program.util import DefinedDataIterator  # Ghidra <= 11.3.2
-
-            iterator = DefinedDataIterator.definedStrings(self.program)
+        from ghidra.program.util import DefinedStringIterator
 
         query_lc = query.lower()
         results: list[StringInfo] = []
+        failures: list[ItemFailure] = []
         total = 0
 
-        for data in iterator:
+        for data in DefinedStringIterator.forProgram(self.program):
             try:
                 val = str(data.getValue())
-                if query_lc in val.lower():
-                    total += 1
-                    if len(results) < limit:
-                        results.append(StringInfo(value=val, address=str(data.getAddress())))
             except Exception as e:
-                logger.debug(f"Skipping string at {data.getAddress()}: {e}")
+                failures.append(ItemFailure(address=str(data.getAddress()), error=self._error_text(e)))
+                continue
+            if query_lc in val.lower():
+                total += 1
+                if len(results) < limit:
+                    results.append(StringInfo(value=val, address=str(data.getAddress())))
 
-        return results, total
+        return StringSearchResults(
+            strings=results, total=total, partial=bool(failures), failures=failures
+        )
 
+    # @spec QRY-019, QRY-020, QRY-033, QRY-034
     @handle_exceptions
     def read_bytes(self, address: str, size: int = 32) -> BytesReadResult:
         """Read raw bytes from the program's memory image."""
@@ -607,49 +804,64 @@ class GhidraTools:
             raise ValueError(f"size {size} exceeds maximum {MAX_SIZE}")
 
         addr = self._parse_address(address)
-
         mem = self.program.getMemory()
-        if not mem.contains(addr):
+        block = mem.getBlock(addr)
+        if block is None:
             raise ValueError(f"Address {address} is not in mapped memory")
+        if not block.isInitialized():
+            raise ValueError(
+                f"Address {address} is in uninitialized memory (block '{block.getName()}'); "
+                "it has no bytes to read."
+            )
 
         buf = JByte[size]  # type: ignore[reportInvalidTypeArguments]
         n = mem.getBytes(addr, buf)
         data = bytes([b & 0xFF for b in buf[:n]]) if n > 0 else b""  # type: ignore
-
-        return BytesReadResult(address=str(addr), size=len(data), data=data.hex())
+        return BytesReadResult(
+            address=str(addr),
+            size=len(data),
+            data=data.hex(),
+            requested_size=size,
+            partial=len(data) < size,
+        )
 
     # -------------------------------------------------------------------------
     # Annotation / write-back tools
     # -------------------------------------------------------------------------
 
+    def _set_comment(self, address: str, kind: str, comment: str, label: str) -> str:
+        """Set (or, for empty text, remove) one kind of comment at an address in memory."""
+        from ghidra.program.model.listing import CommentType
+
+        addr = self._parse_address(address)
+        if not self.program.getMemory().contains(addr):
+            raise ValueError(f"Address {address} is not in the program's memory")
+        listing = self.program.getListing()
+        comment_type = getattr(CommentType, kind)
+        text = comment if comment else None  # None removes the comment
+
+        def _do():
+            listing.setComment(addr, comment_type, text)
+            action = "Set" if text is not None else "Removed"
+            return f"{action} {label} comment at {address}"
+
+        return self._with_transaction(f"Set {kind} comment at {address}", _do)
+
+    # @spec WB-006, WB-025, WB-026, WB-027
     @handle_exceptions
     def set_disassembly_comment(self, address: str, comment: str) -> str:
-        """Set an EOL comment at an address (visible in the disassembly listing)."""
-        from ghidra.program.model.listing import CodeUnit
+        """Set an EOL comment at an address (visible in the disassembly listing).
+        Empty text removes it."""
+        return self._set_comment(address, "EOL", comment, "disassembly")
 
-        addr = self._parse_address(address)
-        listing = self.program.getListing()
-
-        def _do():
-            listing.setComment(addr, CodeUnit.EOL_COMMENT, comment)
-            return f"Set disassembly comment at {address}"
-
-        return self._with_transaction(f"Set EOL comment at {address}", _do)
-
+    # @spec WB-007, WB-025, WB-026, WB-027
     @handle_exceptions
     def set_decompiler_comment(self, address: str, comment: str) -> str:
-        """Set a PRE comment at an address (visible in the decompiler view as // comment)."""
-        from ghidra.program.model.listing import CodeUnit
+        """Set a PRE comment at an address (visible in the decompiler view as // comment).
+        Empty text removes it."""
+        return self._set_comment(address, "PRE", comment, "decompiler")
 
-        addr = self._parse_address(address)
-        listing = self.program.getListing()
-
-        def _do():
-            listing.setComment(addr, CodeUnit.PRE_COMMENT, comment)
-            return f"Set decompiler comment at {address}"
-
-        return self._with_transaction(f"Set PRE comment at {address}", _do)
-
+    # @spec WB-008
     @handle_exceptions
     def rename_function(self, name_or_address: str, new_name: str) -> str:
         """Rename a function by its current name or address."""
@@ -664,6 +876,7 @@ class GhidraTools:
 
         return self._with_transaction(f"Rename function {old_name} → {new_name}", _do)
 
+    # @spec WB-009, WB-010
     @handle_exceptions
     def rename_function_by_address(self, address: str, new_name: str) -> str:
         """Rename a function by its entry point address."""
@@ -683,9 +896,11 @@ class GhidraTools:
 
         return self._with_transaction(f"Rename function at {address}", _do)
 
+    # @spec WB-011
     @handle_exceptions
     def rename_data(self, address: str, new_name: str) -> str:
-        """Rename a data label at a given address."""
+        """Rename the defined data at an address: its primary symbol if that is a named
+        (non-dynamic) symbol, otherwise by creating a label."""
         from ghidra.program.model.symbol import SourceType
 
         addr = self._parse_address(address)
@@ -698,14 +913,35 @@ class GhidraTools:
 
         def _do():
             sym = data.getPrimarySymbol()
-            if sym is not None:
+            if sym is not None and not sym.isDynamic():
                 sym.setName(new_name, SourceType.USER_DEFINED)
-            else:
+            else:  # no symbol, or a default DAT_… label: name the location with a new label
                 st.createLabel(addr, new_name, SourceType.USER_DEFINED)
             return f"Renamed data at {address} → '{new_name}'"
 
         return self._with_transaction(f"Rename data at {address}", _do)
 
+    # @spec WB-013, WB-014, WB-015
+    def _find_local_variable(self, func: "Function", var_name: str):
+        """Decompile a function (30 s) and return the local symbol named exactly var_name."""
+        from ghidra.util.task import ConsoleTaskMonitor
+
+        result = self.decompiler.decompileFunction(func, 30, ConsoleTaskMonitor())
+        if result.getErrorMessage() != "":
+            raise Stop(
+                f"Decompilation failed for '{func.getName()}': {result.getErrorMessage()}"
+            )
+
+        symbols = list(result.getHighFunction().getLocalSymbolMap().getSymbols())
+        for sym in symbols:
+            if sym.getName() == var_name:
+                return sym
+        available = [s.getName() for s in symbols]
+        raise ValueError(
+            f"Variable '{var_name}' not found in '{func.getName()}'. Available: {available}"
+        )
+
+    # @spec WB-016
     @handle_exceptions
     def rename_variable(
         self, function_name_or_address: str, old_var_name: str, new_var_name: str
@@ -713,32 +949,9 @@ class GhidraTools:
         """Rename a local variable within a function (uses the decompiler's high-level model)."""
         from ghidra.program.model.pcode import HighFunctionDBUtil
         from ghidra.program.model.symbol import SourceType
-        from ghidra.util.task import ConsoleTaskMonitor
 
         func = self.find_function(function_name_or_address)
-
-        # Decompile to get the HighFunction with local variable info
-        result = self.decompiler.decompileFunction(func, 30, ConsoleTaskMonitor())
-        if result.getErrorMessage() != "":
-            raise RuntimeError(
-                f"Decompilation failed for '{func.getName()}': {result.getErrorMessage()}"
-            )
-
-        high_func = result.getHighFunction()
-        local_map = high_func.getLocalSymbolMap()
-        target_sym = None
-
-        for sym in local_map.getSymbols():
-            if sym.getName() == old_var_name:
-                target_sym = sym
-                break
-
-        if target_sym is None:
-            available = [s.getName() for s in local_map.getSymbols()]
-            raise ValueError(
-                f"Variable '{old_var_name}' not found in '{func.getName()}'. "
-                f"Available: {available}"
-            )
+        target_sym = self._find_local_variable(func, old_var_name)
 
         def _do():
             HighFunctionDBUtil.updateDBVariable(
@@ -753,6 +966,7 @@ class GhidraTools:
             f"Rename variable {old_var_name} in {func.getName()}", _do
         )
 
+    # @spec WB-018, WB-019, WB-020, WB-024
     @handle_exceptions
     def set_function_prototype(self, name_or_address: str, prototype: str) -> str:
         """
@@ -780,15 +994,24 @@ class GhidraTools:
                 "Ensure the prototype is a valid C function signature, e.g. 'int foo(int a)'"
             )
 
+        old_name = func.getName()
+
         def _do():
             cmd = ApplyFunctionSignatureCmd(
                 func.getEntryPoint(), parsed, SourceType.USER_DEFINED
             )
-            cmd.applyTo(self.program, ConsoleTaskMonitor())
-            return f"Set prototype for '{func.getName()}': {prototype}"
+            if not cmd.applyTo(self.program, ConsoleTaskMonitor()):
+                reason = cmd.getStatusMsg() or "no reason given"
+                raise Stop(f"Ghidra could not apply the prototype to '{old_name}': {reason}")
+            message = f"Set prototype for '{old_name}': {prototype}"
+            new_name = func.getName()
+            if new_name != old_name:  # Ghidra renames a function that still has a default name
+                message += f". The function was renamed to '{new_name}'"
+            return message
 
-        return self._with_transaction(f"Set prototype for {func.getName()}", _do)
+        return self._with_transaction(f"Set prototype for {old_name}", _do)
 
+    # @spec WB-017
     @handle_exceptions
     def set_local_variable_type(
         self, function_name_or_address: str, var_name: str, new_type: str
@@ -799,33 +1022,10 @@ class GhidraTools:
         """
         from ghidra.program.model.pcode import HighFunctionDBUtil
         from ghidra.program.model.symbol import SourceType
-        from ghidra.util.task import ConsoleTaskMonitor
 
         func = self.find_function(function_name_or_address)
         data_type = self._resolve_data_type(new_type)
-
-        # Decompile to get HighFunction
-        result = self.decompiler.decompileFunction(func, 30, ConsoleTaskMonitor())
-        if result.getErrorMessage() != "":
-            raise RuntimeError(
-                f"Decompilation failed for '{func.getName()}': {result.getErrorMessage()}"
-            )
-
-        high_func = result.getHighFunction()
-        local_map = high_func.getLocalSymbolMap()
-        target_sym = None
-
-        for sym in local_map.getSymbols():
-            if sym.getName() == var_name:
-                target_sym = sym
-                break
-
-        if target_sym is None:
-            available = [s.getName() for s in local_map.getSymbols()]
-            raise ValueError(
-                f"Variable '{var_name}' not found in '{func.getName()}'. "
-                f"Available: {available}"
-            )
+        target_sym = self._find_local_variable(func, var_name)
 
         def _do():
             HighFunctionDBUtil.updateDBVariable(
@@ -860,12 +1060,13 @@ class GhidraTools:
         try:
             from ghidrecomp.callgraph import gen_callgraph
         except ImportError as e:
-            raise RuntimeError(
+            raise Stop(
                 "ghidrecomp is required for callgraph generation. "
-                "Install it with: pip install ghidrecomp"
+                "Install it with: pip install 'ghidra-mcp-lite[ghidrecomp]'"
             ) from e
 
-        func = self.find_function(function_name_or_address)
+        resolved = self.resolve_function(function_name_or_address, ResolutionMode.READ)
+        func = resolved.target
         name, direction, _, graphs_data = gen_callgraph(
             func=func,
             max_display_depth=max_depth,
@@ -881,7 +1082,7 @@ class GhidraTools:
 
         graph_content = ""
         for graph_type, content in graphs_data:
-            if CallGraphDisplayType(graph_type) == cg_display_type:
+            if graph_type == cg_display_type.value:  # other entries (URLs, images) are skipped
                 graph_content = content
                 break
 
@@ -902,4 +1103,5 @@ class GhidraTools:
             display_type=cg_display_type,
             graph=graph_content,
             mermaid_url=mermaid_url,
+            resolution=resolved.note,
         )
