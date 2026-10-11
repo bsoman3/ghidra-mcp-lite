@@ -80,7 +80,7 @@ arrows:
     parent: null
     sampled: 2026-10-03
     audited: 2026-10-11
-    audited_sha: 8c36f42
+    audited_sha: cfbb29f
     blocks: []
     blockedBy: [program-lifecycle, queries, write-back]
     detail: server.md
