@@ -7,13 +7,14 @@
 python = "3.13"
 
 [env]
-_.python.venv = { path = ".venv", create = true }
+# uv (used when installed) leaves pip out of new venvs unless asked to seed it.
+_.python.venv = { path = ".venv", create = true, uv_create_args = ["--seed"] }
 GHIDRA_INSTALL_DIR = { required = "Set GHIDRA_INSTALL_DIR in mise.local.toml to your Ghidra 12.1+ install (the directory containing ghidraRun)." }
 JAVA_HOME = { required = "Set JAVA_HOME in mise.local.toml to a JDK 21+ home." }
 
 [tasks.install]
 description = "Install ghidra-mcp-lite into the project venv (with ghidrecomp and test extras)"
-run = 'pip install -e ".[ghidrecomp,dev]"'
+run = 'python -m pip install -e ".[ghidrecomp,dev]"'
 
 [tasks.test]
 description = "Run the unit tests"
@@ -30,8 +31,11 @@ run = "pytest -m gui"
 
 [tasks.serve]
 description = "Run the server headless; arguments are passed to ghidra-mcp"
+# raw: mise delivers Ctrl+C once and does not kill the server while it closes the project.
+raw = true
 run = "ghidra-mcp"
 
 [tasks.gui]
 description = "Run the server in GUI mode; arguments are passed to ghidra-mcp"
+raw = true
 run = "ghidra-mcp --gui"

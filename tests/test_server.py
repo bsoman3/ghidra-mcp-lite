@@ -688,3 +688,58 @@ def test_gui_mode_uses_the_resolved_project_path_and_rejects_rep(gui_cli, tmp_pa
     calls.clear()
     result = runner.invoke(server.main, ["--gui", "--project-path", str(tmp_path / "p.rep")])
     assert result.exit_code == 2 and "p.gpr" in result.output and "launch" not in calls
+
+
+# ── Ctrl+C ───────────────────────────────────────────────────────────────────
+
+
+def _interrupted(*args, **kwargs):
+    raise KeyboardInterrupt
+
+
+# @spec SRV-052, SRV-054
+@pytest.mark.parametrize("args", [[], ["--transport", "streamable-http"]])
+def test_ctrl_c_while_serving_closes_the_project_and_exits_130(cli, monkeypatch, caplog, args):
+    ctx, _, runner = cli
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setattr(server.mcp, "run", _interrupted)
+    result = runner.invoke(server.main, args)
+    assert result.exit_code == 130
+    assert "cancelling analysis and closing the project" in caplog.text
+    assert ctx.calls.count(("close",)) == 1
+    assert "Aborted!" not in result.output and "Traceback" not in result.output
+
+
+# @spec SRV-052
+def test_ctrl_c_during_analyze_only_closes_the_project(cli, monkeypatch):
+    ctx, _, runner = cli
+    monkeypatch.setattr(ctx, "analyze_project", _interrupted)
+    result = runner.invoke(server.main, ["--analyze-only"])
+    assert result.exit_code == 130
+    assert ctx.calls.count(("close",)) == 1
+
+
+# @spec SRV-053
+def test_a_second_ctrl_c_while_closing_quits_and_warns_that_the_lock_files_remain(cli, monkeypatch, caplog, tmp_path):
+    ctx, _, runner = cli
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setattr(server.mcp, "run", _interrupted)
+    monkeypatch.setattr(ctx, "close", _interrupted)
+    result = runner.invoke(server.main, ["--project-path", str(tmp_path / "go-1.gpr")])
+    assert result.exit_code == 130
+    assert "not closed" in caplog.text
+    assert "go-1.lock" in caplog.text and "go-1.lock~" in caplog.text
+    assert "Aborted!" not in result.output and "Traceback" not in result.output
+
+
+# @spec SRV-054
+def test_the_lifespan_cancellation_caused_by_ctrl_c_is_not_logged():
+    noise = logging.LogRecord(
+        "uvicorn.error", logging.ERROR, "", 0,
+        "Traceback (most recent call last):\n  ...\nKeyboardInterrupt\n\nDuring handling of the above "
+        "exception, another exception occurred:\n  ...\nasyncio.exceptions.CancelledError", None, None,
+    )
+    real = logging.LogRecord("uvicorn.error", logging.ERROR, "", 0, "Application startup failed. Exiting.", None, None)
+    filters = [f for f in logging.getLogger("uvicorn.error").filters if isinstance(f, server._DropInterruptedShutdown)]
+    assert filters
+    assert not filters[0].filter(noise) and filters[0].filter(real)

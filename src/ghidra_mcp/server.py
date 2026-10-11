@@ -55,6 +55,21 @@ logging.basicConfig(
     stream=sys.stderr,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+
+
+# @spec SRV-054
+class _DropInterruptedShutdown(logging.Filter):
+    """Drop the traceback uvicorn logs when Ctrl+C cancels the app's lifespan while an MCP session
+    is open (Starlette reports it as a failed shutdown). Only that record is dropped."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not (
+            record.levelno >= logging.ERROR and "KeyboardInterrupt" in message and "CancelledError" in message
+        )
+
+
+logging.getLogger("uvicorn.error").addFilter(_DropInterruptedShutdown())
 logger = logging.getLogger(__name__)
 
 
@@ -1254,6 +1269,32 @@ def main(
         symbols_path=symbols_path,
     )
 
+    # @spec SRV-016, SRV-052, SRV-053
+    interrupted = False
+    try:
+        _run_headless(
+            ctx, list_project_binaries=list_project_binaries, delete_project_binary=delete_project_binary,
+            input_paths=input_paths, analyze_only=analyze_only, transport=transport, host=host, port=port,
+        )
+    except KeyboardInterrupt:
+        interrupted = True
+        logger.warning("Interrupted: cancelling analysis and closing the project.")
+    finally:
+        try:
+            ctx.close()
+        except KeyboardInterrupt:
+            lock = Path(project_dir) / project_name
+            logger.warning(
+                f"Interrupted again: the project was not closed; its lock files remain: {lock}.lock, {lock}.lock~"
+            )
+            sys.exit(130)
+    if interrupted:
+        sys.exit(130)
+
+
+def _run_headless(ctx: GhidraContext, *, list_project_binaries: bool, delete_project_binary: str | None,
+                  input_paths: tuple[str, ...], analyze_only: bool, transport: str, host: str, port: int) -> None:
+    """One-shot commands, startup import, --analyze-only, or serving; main closes the context."""
     # One-shot management commands
     # @spec SRV-009, SRV-033
     if list_project_binaries:
@@ -1261,14 +1302,12 @@ def main(
             bins = ctx.list_binaries()
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
-            ctx.close()
             sys.exit(1)
         if bins:
             for name in bins:
                 click.echo(f"- {name}")
         else:
             click.echo("No binaries in project.")
-        ctx.close()
         return
 
     # @spec SRV-010, SRV-011, SRV-012, SRV-033
@@ -1277,9 +1316,7 @@ def main(
             deleted = ctx.delete_program(delete_project_binary)
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
-            ctx.close()
             sys.exit(1)
-        ctx.close()
         if not deleted:
             click.echo(
                 f"Error: could not delete '{delete_project_binary}'; see the log for details.",
@@ -1304,7 +1341,6 @@ def main(
             else:
                 any_failed = True
                 click.echo(f"{pi.name}: failed ({pi.failure or pi.status.value})")
-        ctx.close()
         if any_failed:
             sys.exit(1)
         return
@@ -1318,13 +1354,11 @@ def main(
     logger.info(f"Starting server (transport={transport}, host={host}, port={port})")
 
     # @spec SRV-015
-    try:
-        if transport == "stdio":
-            mcp.run(transport="stdio")
-        else:
-            mcp.run(transport="streamable-http", host=host, port=port)
-    finally:
-        ctx.close()
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        mcp.run(transport="streamable-http", host=host, port=port)
+
 
 
 if __name__ == "__main__":

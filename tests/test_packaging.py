@@ -100,7 +100,8 @@ def test_mise_provides_python_and_a_project_venv_and_requires_ghidra_and_jdk_pat
     mise = _mise()
     assert mise["tools"] == {"python": "3.13"}  # Ghidra and the JDK are paths, not mise tools
     env = mise["env"]
-    assert env["_"]["python"]["venv"] == {"path": ".venv", "create": True}
+    # uv (which mise uses when installed) leaves pip out of new venvs unless asked to seed it
+    assert env["_"]["python"]["venv"] == {"path": ".venv", "create": True, "uv_create_args": ["--seed"]}
     for var in ("GHIDRA_INSTALL_DIR", "JAVA_HOME"):
         assert "mise.local.toml" in env[var]["required"]
 
@@ -108,13 +109,15 @@ def test_mise_provides_python_and_a_project_venv_and_requires_ghidra_and_jdk_pat
 # @spec SRV-047
 def test_mise_tasks_install_test_and_serve():
     tasks = _mise()["tasks"]
-    assert 'pip install -e ".[ghidrecomp,dev]"' in tasks["install"]["run"]
+    assert tasks["install"]["run"] == 'python -m pip install -e ".[ghidrecomp,dev]"'  # the venv's own pip
     assert tasks["test"]["run"] == 'pytest -m "not integration"'
     assert tasks["test:integration"]["run"] == "pytest -m integration"
     assert tasks["test:gui"]["run"] == "pytest -m gui"
     assert tasks["test:gui"]["env"] == {"GHIDRA_MCP_GUI_TESTS": "1"}
     assert tasks["serve"]["run"] == "ghidra-mcp"
     assert tasks["gui"]["run"] == "ghidra-mcp --gui"
+    # raw: mise delivers Ctrl+C once and lets the server finish closing the project
+    assert tasks["serve"]["raw"] is True and tasks["gui"]["raw"] is True
 
 
 # @spec SRV-048
