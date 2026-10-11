@@ -5,6 +5,7 @@ import logging
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -467,7 +468,7 @@ def test_gpr_path_gives_the_project_directory_and_name(cli, tmp_path):
         server.main, ["--project-path", str(gpr), "--project-name", "ignored", "--list-project-binaries"]
     )
     assert result.exit_code == 0, result.output
-    assert ctx.kwargs["project_path"] == str(gpr.parent)
+    assert ctx.kwargs["project_path"] == str(gpr.parent.resolve())
     assert ctx.kwargs["project_name"] == "mine"
 
 
@@ -476,8 +477,33 @@ def test_default_project_location(cli):
     ctx, _, runner = cli
     result = runner.invoke(server.main, ["--list-project-binaries"])
     assert result.exit_code == 0, result.output
-    assert ctx.kwargs["project_path"] == "ghidra_projects"
+    assert ctx.kwargs["project_path"] == str((Path.cwd() / "ghidra_projects").resolve())
     assert ctx.kwargs["project_name"] == "my_project"
+
+
+# @spec SRV-050
+def test_project_path_expands_home_and_resolves_dotdot(cli, tmp_path, monkeypatch):
+    ctx, _, runner = cli
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = runner.invoke(server.main, ["--project-path", "~/a/../b/proj.gpr", "--list-project-binaries"])
+    assert result.exit_code == 0, result.output
+    assert ctx.kwargs["project_path"] == str((tmp_path / "b").resolve())
+    assert ctx.kwargs["project_name"] == "proj"
+    result = runner.invoke(server.main, ["--project-path", "../analyses", "--list-project-binaries"])
+    assert result.exit_code == 0, result.output
+    resolved = Path(ctx.kwargs["project_path"])
+    assert resolved.is_absolute() and ".." not in resolved.parts
+
+
+# @spec SRV-051
+def test_a_project_data_folder_is_rejected_naming_the_gpr(cli, monkeypatch, tmp_path):
+    _, runs, runner = cli
+    started = []
+    monkeypatch.setattr(server.pyghidra, "start", lambda *a, **k: started.append(True))
+    result = runner.invoke(server.main, ["--project-path", str(tmp_path / "go-1.rep")])
+    assert result.exit_code == 2
+    assert "go-1.gpr" in result.output
+    assert started == [] and runs == []
 
 
 # @spec SRV-005
@@ -650,3 +676,15 @@ async def test_gui_only_tools_are_registered_only_on_request(fake_ctx):
     finally:
         for name in ("get_current_address", "get_current_function", "go_to"):
             server.mcp.remove_tool(name)
+
+
+# @spec SRV-050, SRV-051
+def test_gui_mode_uses_the_resolved_project_path_and_rejects_rep(gui_cli, tmp_path):
+    calls, started, runner = gui_cli
+    result = runner.invoke(server.main, ["--gui", "--project-path", str(tmp_path / "x" / ".." / "p.gpr")])
+    assert result.exit_code == 0, result.output
+    assert calls["project"] == (str(tmp_path.resolve()), "p")
+    assert calls["launch"]["project_dir"] == str(tmp_path.resolve())
+    calls.clear()
+    result = runner.invoke(server.main, ["--gui", "--project-path", str(tmp_path / "p.rep")])
+    assert result.exit_code == 2 and "p.gpr" in result.output and "launch" not in calls

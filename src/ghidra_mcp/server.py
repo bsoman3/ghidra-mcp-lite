@@ -1204,6 +1204,16 @@ def main(
       # GUI mode: watch and steer the agent in Ghidra's GUI (serves on http://127.0.0.1:8000/mcp):
       ghidra-mcp --gui --project-path ~/ghidra_projects /path/to/binary
     """
+    # @spec SRV-050: Ghidra rejects path elements starting with "." (such as ".."), and MCP
+    # client configs pass "~" unexpanded.
+    project_path = project_path.expanduser().resolve()
+    # @spec SRV-051
+    if project_path.suffix.lower() == ".rep":
+        raise click.UsageError(
+            f"{project_path} is a Ghidra project's data folder; pass the project file instead: "
+            f"--project-path {project_path.with_suffix('.gpr')}"
+        )
+
     # Handle .gpr file paths
     if project_path.suffix.lower() == ".gpr":
         project_dir = str(project_path.parent)

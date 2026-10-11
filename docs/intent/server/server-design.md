@@ -29,7 +29,7 @@ Principles stated in the code and README:
 | `-t, --transport` `stdio`\|`streamable-http` (`sse` removed; see Transports) | `stdio` (`streamable-http` with `--gui`) | `MCP_TRANSPORT` | server |
 | `-p, --port` | `8000` | `MCP_PORT` | server (HTTP transports) |
 | `-o, --host` | `127.0.0.1` | `MCP_HOST` | server (HTTP transports) |
-| `--project-path` | `ghidra_projects` | n/a | program-lifecycle (server turns a `.gpr` into a directory and name) |
+| `--project-path` | `ghidra_projects` | n/a | program-lifecycle (server turns a `.gpr` into a directory and name). `~` is expanded and the path made absolute with `..` resolved, because Ghidra rejects path elements that start with a dot. A project's data folder (`<name>.rep`) is rejected with a usage error naming its `.gpr`. |
 | `--project-name` | `my_project` | n/a | program-lifecycle (ignored for `.gpr`) |
 | `--wait-for-analysis / --no-wait-for-analysis` | **on** | n/a | program-lifecycle: a tool call for a pending binary waits up to 45 s before `retry_later`. Startup never blocks on it. |
 | `--analyze-only` | flag | n/a | server one-shot: import inputs, analyze everything to completion, report each binary's status, exit |
@@ -50,7 +50,9 @@ Per-binary analysis options (PDB path, GDT archives, analyzer options, symbol us
 `main` (`server.py`):
 
 ```
-1. if project_path ends with .gpr → project_dir = parent, project_name = stem
+1. project_path ← expand ~, make absolute, resolve ..
+   if it ends with .rep → usage error: pass <name>.gpr instead
+   if it ends with .gpr → project_dir = parent, project_name = stem
 2. pyghidra.start(verbose_analysis)                      # JVM up; pyghidra reports a missing Ghidra
 3. ctx ← GhidraContext(project, verbose_analysis, wait_for_analysis, symbols_path)
 4. --list-project-binaries → print "- <pathname>" per binary (or "No binaries in project."); exit 1 on error
@@ -220,6 +222,7 @@ Users install and run the project through mise, configured for this project only
 | CLI framework | click, with env-var fallbacks for transport, port, and host | argparse | *[inferred]* |
 | Project management on the CLI | Flags on the main command that exit after running | Subcommands | *[inferred]* |
 | `.gpr` support | Accept a `.gpr` path and derive the directory and name | Require directory plus name | Stated in README § CLI Reference. |
+| `.rep` paths | Reject with a usage error naming the project's `.gpr` | Treat a `.rep` like its `.gpr`; accept it as a project directory | One way to name a project keeps commands unambiguous. Accepting the data folder as a directory would create a new project inside another project's data. |
 
 ## Open Questions & Future Decisions
 

@@ -207,7 +207,7 @@ class GhidraContext:
         from ghidra.framework.model import ProjectLocator
 
         self.project_path.mkdir(exist_ok=True, parents=True)
-        proj_dir = str(self.project_path.absolute())
+        proj_dir = str(self.project_path.expanduser().resolve())  # Ghidra rejects ".." elements
         locator = ProjectLocator(proj_dir, self.project_name)
 
         if locator.exists():

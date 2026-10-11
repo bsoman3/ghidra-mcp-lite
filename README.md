@@ -298,7 +298,7 @@ ghidra-mcp [OPTIONS] [INPUT_PATHS]...
 | `-t, --transport` | `stdio` | Transport: `stdio` or `streamable-http` |
 | `-p, --port` | `8000` | Port (HTTP transports only) |
 | `-o, --host` | `127.0.0.1` | Host (HTTP transports only). Use `0.0.0.0` for remote access |
-| `--project-path` | `./ghidra_projects` | Project directory, or path to an existing `.gpr` file |
+| `--project-path` | `./ghidra_projects` | Project directory, or path to an existing project's `.gpr` file (not its `.rep` folder). `~` and relative paths are resolved; `mise run` resolves relative paths from the project directory |
 | `--project-name` | `my_project` | Project name (ignored when `--project-path` is a `.gpr` file) |
 | `--wait-for-analysis` / `--no-wait-for-analysis` | on | Let tool calls for a binary still being analyzed wait up to 45 s before returning `retry_later`. Startup never blocks |
 | `--verbose-analysis` | off | Print verbose Ghidra analysis output to stderr |

@@ -22,6 +22,8 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 - [x] **SRV-001**: The system shall provide a `ghidra-mcp` console command, and `python -m ghidra_mcp`, that starts the MCP server.
 - [x] **SRV-002**: The system shall accept a transport option limited to `stdio` (the default, except in GUI mode; GUI-001) and `streamable-http`, a port option (default 8000), and a host option (default `127.0.0.1`), each overridable by the `MCP_TRANSPORT`, `MCP_PORT`, and `MCP_HOST` environment variables respectively.
 - [x] **SRV-003**: When `--project-path` names a `.gpr` file, the system shall use the file's directory as the project directory and the file's stem as the project name, ignoring `--project-name`.
+- [x] **SRV-050**: The system shall expand `~` in `--project-path` and make it absolute with `..` elements resolved before using it, in headless and GUI mode.
+- [x] **SRV-051**: If `--project-path` names a Ghidra project data folder (`<name>.rep`), then the system shall reject the command line before starting Ghidra, naming the project file (`<name>.gpr`) to pass instead.
 - [x] **SRV-004**: Where `--project-path` and `--project-name` are not given, the system shall use `ghidra_projects` (relative to the working directory) as the project directory and `my_project` as the project name.
 - [x] **SRV-005**: If an input path given on the command line does not exist, then the system shall reject the command line before starting Ghidra.
 - [x] **SRV-007**: When starting, the system shall start the Ghidra JVM through pyghidra before constructing the Ghidra context.

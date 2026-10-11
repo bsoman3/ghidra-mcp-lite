@@ -4,7 +4,7 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 
 ## Status
 
-**OK** — all 47 active specs implemented and covered by tests (2026-10-11); one item deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; extended for GUI mode and the analysis tools (audited at `5cc28ab`), then for the mise setup environment, audited at `277a045` (2026-10-11).
+**OK** — all 49 active specs implemented and covered by tests (2026-10-11); one item deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; extended for GUI mode and the analysis tools (audited at `5cc28ab`), then for the mise setup environment, audited at `277a045` (2026-10-11).
 
 ## References
 
@@ -15,7 +15,7 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 - docs/intent/server/server-design.md (includes the full 29-tool registry, startup sequence, Transports, MCP Server and Lifespan, Project Listing, and Failure Reporting)
 
 ### EARS
-- docs/intent/server/server-specs.md (47 specs, prefix `SRV-*`; `SRV-006` and `SRV-026` retired)
+- docs/intent/server/server-specs.md (49 specs, prefix `SRV-*`; `SRV-006` and `SRV-026` retired)
 
 ### Tests
 - `tests/test_server.py` — failure reporting, tool surface, CLI (unit, with fakes)
@@ -47,14 +47,14 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 
 | Category | Spec IDs | Implemented | Deferred | Gaps |
 |----------|----------|-------------|----------|------|
-| Command line | SRV-001 to SRV-005, SRV-007, SRV-008, SRV-043, SRV-045 | 9 | 0 | 0 |
+| Command line | SRV-001 to SRV-005, SRV-007, SRV-008, SRV-043, SRV-045, SRV-050, SRV-051 | 11 | 0 | 0 |
 | One-shot project commands | SRV-009 to SRV-012, SRV-033, SRV-035 | 6 | 0 | 0 |
 | Startup and serving | SRV-013 to SRV-017, SRV-038 | 6 | 0 | 0 |
 | Tool surface | SRV-018 to SRV-024, SRV-037, SRV-039, SRV-044 | 10 | 0 | 0 |
 | Failure reporting | SRV-025, SRV-027, SRV-028, SRV-031, SRV-032, SRV-036, SRV-042 | 7 | 0 | 0 |
 | Packaging and platform | SRV-029, SRV-030, SRV-034, SRV-040, SRV-041, SRV-046 to SRV-049 | 9 | 0 | 0 |
 
-**Summary:** 47 of 47 active specs implemented and covered by tests in `tests/`; 0 gaps. No open questions; 1 item is deferred.
+**Summary:** 49 of 49 active specs implemented and covered by tests in `tests/`; 0 gaps. No open questions; 1 item is deferred.
 
 ## Key Findings
 
