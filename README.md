@@ -10,34 +10,38 @@ Designed to run comfortably on a small VM (e.g. a t3.small) where embedding-base
 
 | Requirement | Notes |
 |-------------|-------|
-| **Ghidra 12.1+** | Tested on 12.1.4. Download from [ghidra-sre.org](https://ghidra-sre.org) |
-| **JDK 21+** | Required by Ghidra 12.1. Must be in `PATH` or `JAVA_HOME` |
-| **Python 3.11–3.14** | The server is pure Python. On Python 3.14, `pip` builds JPype from source, so a C/C++ compiler is needed (Xcode Command Line Tools on macOS) |
-| **pyghidra 3.1+** | Installed automatically as a dependency |
+| **[mise](https://mise.jdx.dev)** | Sets up the project's Python environment and runs it. Install with `brew install mise` or see the mise docs |
+| **Ghidra 12.1+** | Tested on 12.1.4. Download from [ghidra-sre.org](https://ghidra-sre.org); you point the project at it |
+| **JDK 21+** | Required by Ghidra 12.1; you point the project at it |
+
+mise provides Python 3.13 in a project-local virtual environment (`.venv`). The package itself supports Python 3.11–3.14; 3.13 is pinned because pyghidra's JPype dependency ships prebuilt wheels up to 3.13. Nothing is installed or configured outside the project directory.
 
 ---
 
 ## Installation
 
-```bash
-git clone <this-repo>
-cd ghidra-mcp-lite
-pip install -e .
-```
+1. Point the project at your Ghidra and JDK by creating `mise.local.toml` (git-ignored) from the example:
 
-Or without cloning:
+   ```bash
+   cd ghidra-mcp-lite
+   cp mise.local.toml.example mise.local.toml
+   ```
 
-```bash
-pip install git+<this-repo-url>
-```
+   ```toml
+   [env]
+   GHIDRA_INSTALL_DIR = "/path/to/ghidra_12.1.4_PUBLIC"   # contains ghidraRun and Ghidra/
+   JAVA_HOME = "/path/to/jdk-21"                          # on macOS: /usr/libexec/java_home -v 21
+   ```
 
-This installs the `ghidra-mcp` CLI entry point.
+2. Trust the project's mise configuration, install Python, and install the server:
 
-`ghidrecomp` is optional: it enables `gen_callgraph` and PDB/symbol-server setup during analysis.
+   ```bash
+   mise trust
+   mise install
+   mise run install
+   ```
 
-```bash
-pip install -e ".[ghidrecomp]"
-```
+This creates `.venv` with the `ghidra-mcp` command, `ghidrecomp` (for `gen_callgraph` and PDB/symbol setup), and the test tools. mise refuses to run until `GHIDRA_INSTALL_DIR` and `JAVA_HOME` are set, and says where to set them. With `mise activate` in your shell, `ghidra-mcp` is on your PATH inside the project; otherwise use `mise run` or `mise exec`, as below.
 
 ---
 
@@ -45,19 +49,7 @@ pip install -e ".[ghidrecomp]"
 
 ### Finding Ghidra
 
-pyghidra locates Ghidra via the `GHIDRA_INSTALL_DIR` environment variable. Set it to the root of your Ghidra installation — the directory that contains `ghidraRun` and the `Ghidra/` subdirectory:
-
-```bash
-export GHIDRA_INSTALL_DIR=/opt/ghidra_12.1.4_PUBLIC
-```
-
-You can set this in your shell profile, in the MCP server config's `env` block, or on the command line. The server will fail to start with a clear error if it cannot locate Ghidra.
-
-If you have multiple JDKs installed and pyghidra picks the wrong one, set `JAVA_HOME` explicitly:
-
-```bash
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-```
+pyghidra locates Ghidra through `GHIDRA_INSTALL_DIR` and the JDK through `JAVA_HOME`, both set by mise from `mise.local.toml`. The server fails to start with a clear error if either path is wrong.
 
 ### Loading a Binary and Running Analysis
 
@@ -91,25 +83,26 @@ ghidra-mcp --analyze-only /path/to/binary   # exits non-zero if any binary faile
 
 ## Quick Start
 
-```bash
-# Set Ghidra location
-export GHIDRA_INSTALL_DIR=/opt/ghidra_12.1.4_PUBLIC
+Run these from the project directory (`mise run serve` and `mise run gui` pass their arguments to `ghidra-mcp`):
 
+```bash
 # Import, analyze, and serve a binary over stdio
-ghidra-mcp /path/to/target_binary
+mise run serve /path/to/target_binary
 
 # Serve over HTTP (useful for remote VMs)
-ghidra-mcp --transport streamable-http --host 0.0.0.0 --port 8000 \
-    /path/to/target_binary
+mise run serve --transport streamable-http --host 0.0.0.0 --port 8000 /path/to/target_binary
 
 # Open an existing Ghidra project without importing anything
-ghidra-mcp --project-path /path/to/existing_project.gpr
+mise run serve --project-path /path/to/existing_project.gpr
 
 # List what's already in the project
-ghidra-mcp --project-path ./ghidra_projects --list-project-binaries
+mise run serve --project-path ~/ghidra_projects --list-project-binaries
 
 # Analyze ahead of time without serving
-ghidra-mcp --analyze-only /path/to/target_binary
+mise run serve --analyze-only /path/to/target_binary
+
+# GUI mode: open the Ghidra GUI and serve alongside it (see GUI Mode)
+mise run gui --project-path ~/ghidra_projects /path/to/target_binary
 ```
 
 ---
@@ -120,6 +113,8 @@ There are two deployment patterns:
 
 - **Local** — the MCP client launches the server as a subprocess on the same machine (`stdio` transport). Use this for desktop RE work.
 - **Remote** — the server runs on a VM or container (`streamable-http` transport). The MCP client connects over HTTP. Use this for cloud-based headless analysis (e.g. a t3.small).
+
+A client launches the server outside your shell, so local configurations run it through mise: `mise exec -C /path/to/ghidra-mcp-lite -- ghidra-mcp …` applies the project's Python environment and the paths in `mise.local.toml`. Use absolute paths. If the client cannot find `mise` (for example, an editor started from the Dock), give its full path instead, such as `/opt/homebrew/bin/mise` (see `which mise`).
 
 ---
 
@@ -133,13 +128,11 @@ Config file: `~/.claude/settings.json`
 {
   "mcpServers": {
     "ghidra": {
-      "command": "ghidra-mcp",
+      "command": "mise",
       "args": [
-        "/path/to/target_binary"
-      ],
-      "env": {
-        "GHIDRA_INSTALL_DIR": "/opt/ghidra_12.1.4_PUBLIC"
-      }
+        "exec", "-C", "/path/to/ghidra-mcp-lite", "--",
+        "ghidra-mcp", "--project-path", "/path/to/ghidra_projects", "/path/to/target_binary"
+      ]
     }
   }
 }
@@ -147,13 +140,9 @@ Config file: `~/.claude/settings.json`
 
 **Remote VM (streamable-http):**
 
-Start the server on the VM:
+Start the server on the VM, from the project directory:
 ```bash
-GHIDRA_INSTALL_DIR=/opt/ghidra_12.1.4_PUBLIC \
-ghidra-mcp --transport streamable-http \
-           --host 0.0.0.0 \
-           --port 8000 \
-           /path/to/binary
+mise run serve --transport streamable-http --host 0.0.0.0 --port 8000 /path/to/binary
 ```
 
 Configure Claude Code to connect:
@@ -171,7 +160,7 @@ Configure Claude Code to connect:
 Add via CLI:
 ```bash
 # stdio
-claude mcp add ghidra -- ghidra-mcp /path/to/binary
+claude mcp add ghidra -- mise exec -C /path/to/ghidra-mcp-lite -- ghidra-mcp --project-path /path/to/ghidra_projects /path/to/binary
 
 # remote HTTP
 claude mcp add --transport http ghidra http://<vm-ip>:8000/mcp
@@ -190,13 +179,11 @@ Create or edit `.vscode/mcp.json` in your workspace:
   "servers": {
     "ghidra": {
       "type": "stdio",
-      "command": "ghidra-mcp",
+      "command": "mise",
       "args": [
-        "/path/to/target_binary"
-      ],
-      "env": {
-        "GHIDRA_INSTALL_DIR": "/opt/ghidra_12.1.4_PUBLIC"
-      }
+        "exec", "-C", "/path/to/ghidra-mcp-lite", "--",
+        "ghidra-mcp", "--project-path", "/path/to/ghidra_projects", "/path/to/target_binary"
+      ]
     }
   }
 }
@@ -223,11 +210,11 @@ For a user-level (not workspace) config, add the same block under `"mcp"` in VS 
     "servers": {
       "ghidra": {
         "type": "stdio",
-        "command": "ghidra-mcp",
-        "args": ["/path/to/target_binary"],
-        "env": {
-          "GHIDRA_INSTALL_DIR": "/opt/ghidra_12.1.4_PUBLIC"
-        }
+        "command": "mise",
+        "args": [
+          "exec", "-C", "/path/to/ghidra-mcp-lite", "--",
+          "ghidra-mcp", "--project-path", "/path/to/ghidra_projects", "/path/to/target_binary"
+        ]
       }
     }
   }
@@ -251,13 +238,11 @@ Or configure from the Cline panel: **MCP Servers → Edit MCP Settings**.
 {
   "mcpServers": {
     "ghidra": {
-      "command": "ghidra-mcp",
+      "command": "mise",
       "args": [
-        "/path/to/target_binary"
+        "exec", "-C", "/path/to/ghidra-mcp-lite", "--",
+        "ghidra-mcp", "--project-path", "/path/to/ghidra_projects", "/path/to/target_binary"
       ],
-      "env": {
-        "GHIDRA_INSTALL_DIR": "/opt/ghidra_12.1.4_PUBLIC"
-      },
       "disabled": false,
       "autoApprove": []
     }
@@ -286,8 +271,7 @@ Or configure from the Cline panel: **MCP Servers → Edit MCP Settings**.
 Run the server inside the Ghidra GUI to watch and steer the agent's work:
 
 ```bash
-export GHIDRA_INSTALL_DIR=/opt/ghidra_12.1.4_PUBLIC
-ghidra-mcp --gui --project-path ~/ghidra_projects /path/to/binary
+mise run gui --project-path ~/ghidra_projects /path/to/binary
 claude mcp add --transport http ghidra http://127.0.0.1:8000/mcp   # in another terminal
 ```
 
@@ -443,8 +427,8 @@ Every failed tool call returns an error result whose message starts with a recov
 
 **Write-back tools require a writable project.** The project directory must be writable by the server process. If you open an existing `.gpr` file from a read-only location the rename/comment/type tools will fail.
 
-**ghidrecomp is optional.** `gen_callgraph` requires the `ghidrecomp` package (`pip install "ghidra-mcp-lite[ghidrecomp]"`), and PDB/symbol-server setup uses it; without it, symbol configuration is skipped and noted in the binary's `warnings`. All other tools work without it.
+**ghidrecomp.** `gen_callgraph` requires the `ghidrecomp` package, and PDB/symbol-server setup uses it; `mise run install` includes it. Without it, `gen_callgraph` fails and symbol configuration is skipped and noted in the binary's `warnings`; all other tools work.
 
-**Development.** Run the unit tests with `pip install -e ".[dev]"` and `pytest`. The integration tests need a Ghidra install and a C compiler: `GHIDRA_INSTALL_DIR=/path/to/ghidra_12.1.4_PUBLIC pytest -m integration`.
+**Development.** `mise run test` runs the unit tests. `mise run test:integration` runs the tools against your Ghidra (it also needs a C compiler), and `mise run test:gui` runs the GUI smoke suite, which opens a Ghidra window. `mise tasks` lists every task.
 
 **`get_current_function` / `get_current_address` are not implemented.** These tools from GUI-based Ghidra MCP servers require an interactive Ghidra UI session and cannot be supported in headless mode.

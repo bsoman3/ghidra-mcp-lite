@@ -1,0 +1,37 @@
+# Project-only toolchain for ghidra-mcp-lite. Ghidra and the JDK are not mise tools:
+# point at your own installs in mise.local.toml (copy mise.local.toml.example).
+# @spec SRV-046, SRV-047
+
+[tools]
+# pyghidra pins JPype 1.5.2, which ships prebuilt wheels up to Python 3.13.
+python = "3.13"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+GHIDRA_INSTALL_DIR = { required = "Set GHIDRA_INSTALL_DIR in mise.local.toml to your Ghidra 12.1+ install (the directory containing ghidraRun)." }
+JAVA_HOME = { required = "Set JAVA_HOME in mise.local.toml to a JDK 21+ home." }
+
+[tasks.install]
+description = "Install ghidra-mcp-lite into the project venv (with ghidrecomp and test extras)"
+run = 'pip install -e ".[ghidrecomp,dev]"'
+
+[tasks.test]
+description = "Run the unit tests"
+run = 'pytest -m "not integration"'
+
+[tasks."test:integration"]
+description = "Run the integration tests against your Ghidra (needs a C compiler)"
+run = "pytest -m integration"
+
+[tasks."test:gui"]
+description = "Run the GUI smoke suite (opens a Ghidra window; needs a display)"
+env = { GHIDRA_MCP_GUI_TESTS = "1" }
+run = "pytest -m gui"
+
+[tasks.serve]
+description = "Run the server headless; arguments are passed to ghidra-mcp"
+run = "ghidra-mcp"
+
+[tasks.gui]
+description = "Run the server in GUI mode; arguments are passed to ghidra-mcp"
+run = "ghidra-mcp --gui"

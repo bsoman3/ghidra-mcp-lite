@@ -2,11 +2,12 @@
 
 **LLD**: docs/intent/server/server-design.md
 **Implementing artifacts**:
-- src/ghidra_mcp/server.py (CLI, MCP server app, lifespan, `_err`, `_tools`, 29 tool wrappers)
+- src/ghidra_mcp/server.py (CLI including `--gui`, MCP server app, lifespan, `_err`, `_tools`, the 35 tool wrappers, the GUI-only tools and `register_gui_tools`)
 - src/ghidra_mcp/tools.py (`handle_exceptions`)
 - src/ghidra_mcp/errors.py (failure categories, `classify`, `describe`)
 - src/ghidra_mcp/models.py (`ProgramInfo`, `ProgramInfos`)
-- src/ghidra_mcp/__main__.py, src/ghidra_mcp/__init__.py, pyproject.toml, README.md (prerequisites and CLI reference)
+- src/ghidra_mcp/__main__.py, src/ghidra_mcp/__init__.py, pyproject.toml, README.md (prerequisites, installation, CLI reference)
+- mise.toml, mise.local.toml.example, .gitignore (setup environment)
 
 Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
@@ -73,6 +74,10 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 - [x] **SRV-030**: The system shall report its version via `-v` / `--version`.
 - [x] **SRV-045**: The system shall accept a `--gui` flag that starts GUI mode, handled by gui-host (GUI-001 to GUI-008).
 - [x] **SRV-043**: The CLI shall not accept `--force-analysis`, `--no-symbols`, `--sym-file-path`, `--gdt`, or `--program-options`; per-binary analysis options are tool arguments.
-- [x] **SRV-034**: The README prerequisites shall state Ghidra 12.1 or later with JDK 21 or later and Python 3.11 through 3.14, and the package metadata shall require Python ≥ 3.11 and MCP Python SDK 2.x at version 2.3 or later.
+- [x] **SRV-034**: The README prerequisites shall state mise, Ghidra 12.1 or later, and JDK 21 or later, and that mise provides Python 3.13 while the package supports Python 3.11 through 3.14; the package metadata shall require Python ≥ 3.11 and MCP Python SDK 2.x at version 2.3 or later.
 - [x] **SRV-040**: The package metadata shall declare `pydantic` and `jpype1` as direct dependencies, and the package version shall be defined in exactly one place.
+- [x] **SRV-046**: The project shall provide a `mise.toml` at its root whose only mise tool is Python 3.13, which creates and activates a project virtual environment at `.venv`, and which declares `GHIDRA_INSTALL_DIR` and `JAVA_HOME` as required environment variables, each with a message saying to set it in `mise.local.toml`.
+- [x] **SRV-047**: The `mise.toml` shall define the tasks `install` (an editable install with the `ghidrecomp` and `dev` extras), `test` (the tests not marked `integration`), `test:integration` (the tests marked `integration`), `test:gui` (the tests marked `gui`, with `GHIDRA_MCP_GUI_TESTS=1`), `serve` (`ghidra-mcp`), and `gui` (`ghidra-mcp --gui`).
+- [x] **SRV-048**: The project shall commit a `mise.local.toml.example` that sets `GHIDRA_INSTALL_DIR` and `JAVA_HOME`, and shall exclude `mise.local.toml` from version control.
+- [x] **SRV-049**: The README shall describe installation through mise only — providing the Ghidra and JDK paths in `mise.local.toml`, then `mise trust`, `mise install`, and `mise run install` — and its MCP client configurations shall launch the server with `mise exec -C <project> -- ghidra-mcp`.
 - [x] **SRV-041**: The README CLI reference shall list only the `stdio` and `streamable-http` transports, shall describe `--wait-for-analysis` (on by default; tool calls wait up to 45 seconds) and `--analyze-only` as implemented, and shall not list the removed per-binary analysis flags.

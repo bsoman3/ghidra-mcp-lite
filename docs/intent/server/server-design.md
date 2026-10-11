@@ -184,6 +184,16 @@ Every tool failure carries exactly one recovery category, telling the caller wha
 - `python -m ghidra_mcp` → `__main__.py` → `server.main`.
 - **Target platform** (HLD Goals): Ghidra 12.1 or later (12.1.4 current) with JDK 21+, and Python 3.11–3.14.
 
+## Setup Environment (mise)
+
+Users install and run the project through mise, configured for this project only (`mise.toml` at the project root; nothing at workspace or user level):
+
+- **Python from mise.** `[tools] python = "3.13"`. pyghidra pins JPype 1.5.2, which ships prebuilt wheels up to Python 3.13; on 3.14 it builds from source and needs a C compiler. 3.11–3.14 remain supported for anyone setting up Python another way.
+- **A project virtual environment.** mise creates and activates `.venv` in the project (`_.python.venv`), so `pip install` and the `ghidra-mcp` command stay inside the project.
+- **Ghidra and the JDK are paths, not mise tools.** `GHIDRA_INSTALL_DIR` and `JAVA_HOME` are required environment variables: mise refuses to run, with a message saying where to set them, until both are defined. Each user sets them in a git-ignored `mise.local.toml` (a committed `mise.local.toml.example` shows the form), or exports them in the shell.
+- **Tasks.** `install` (`pip install -e ".[ghidrecomp,dev]"`); `test` (the unit tests only: mise always sets `GHIDRA_INSTALL_DIR`, which would otherwise switch the integration suite on), `test:integration`, and `test:gui` (which sets `GHIDRA_MCP_GUI_TESTS=1`); `serve` and `gui` (`ghidra-mcp` and `ghidra-mcp --gui`), which pass their arguments through to the command.
+- **MCP clients.** A client launches the server outside the user's shell, so client configurations run it as `mise exec -C <project> -- ghidra-mcp …`, which applies the project's Python environment and paths.
+
 ## Decisions & Alternatives
 
 | Decision | Chosen | Alternatives Considered | Rationale |
@@ -205,6 +215,7 @@ Every tool failure carries exactly one recovery category, telling the caller wha
 | Metadata availability | Return metadata whatever the analysis state | Put it behind the analysis gate | Metadata doesn't depend on analysis; a `retry_later` would misinform the caller. |
 | One-shot exit status | Non-zero exit when the command fails | Always exit 0 | HLD tenet *Explicit over silent*; lets scripts detect failure. |
 | Logging | stderr at INFO | stdout | *[inferred]* The stdio transport owns stdout. |
+| Setup environment | A project-only `mise.toml`: Python 3.13 and a project venv from mise; Ghidra and the JDK supplied as paths (`GHIDRA_INSTALL_DIR`, `JAVA_HOME`, required) | mise also installing Ghidra and a JDK; a workspace- or user-level mise configuration; manual venv and pip; Docker | Ghidra and a JDK are large, usually already installed, and shared with other tools, so users point at their own copies. A project-only configuration keeps neighboring projects independent. Python 3.13 avoids compiling JPype. Docker cannot host GUI mode on a desktop. |
 | GUI-only tools | Registered only when `--gui` is given | Register in every mode and fail headless | Agents see only tools that can work (gui-host). |
 | CLI framework | click, with env-var fallbacks for transport, port, and host | argparse | *[inferred]* |
 | Project management on the CLI | Flags on the main command that exit after running | Subcommands | *[inferred]* |

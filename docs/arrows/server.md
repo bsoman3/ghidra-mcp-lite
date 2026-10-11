@@ -4,7 +4,7 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 
 ## Status
 
-**OK** — all 43 active specs implemented and covered by tests (2026-10-04); one item deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; extended for GUI mode and the analysis tools, and audited at `5cc28ab` (2026-10-04).
+**OK** — all 47 active specs implemented and covered by tests (2026-10-11); one item deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; extended for GUI mode and the analysis tools (audited at `5cc28ab`), then for the mise setup environment on 2026-10-11 (not yet committed).
 
 ## References
 
@@ -15,7 +15,7 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 - docs/intent/server/server-design.md (includes the full 29-tool registry, startup sequence, Transports, MCP Server and Lifespan, Project Listing, and Failure Reporting)
 
 ### EARS
-- docs/intent/server/server-specs.md (43 specs, prefix `SRV-*`; `SRV-006` and `SRV-026` retired)
+- docs/intent/server/server-specs.md (47 specs, prefix `SRV-*`; `SRV-006` and `SRV-026` retired)
 
 ### Tests
 - `tests/test_server.py` — failure reporting, tool surface, CLI (unit, with fakes)
@@ -28,7 +28,8 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 - `src/ghidra_mcp/errors.py` — `FixInput`, `RetryLater`, `Stop`, `classify`, `describe`
 - `src/ghidra_mcp/tools.py` — `handle_exceptions` (program lock, logging by category)
 - `src/ghidra_mcp/models.py` — `ProgramInfo`, `ProgramInfos` (project-management responses)
-- `src/ghidra_mcp/__main__.py`, `src/ghidra_mcp/__init__.py`, `pyproject.toml`, `README.md` — entry points, version, dependencies, prerequisites, CLI and tool reference
+- `src/ghidra_mcp/__main__.py`, `src/ghidra_mcp/__init__.py`, `pyproject.toml`, `README.md` — entry points, version, dependencies, prerequisites, installation, CLI and tool reference
+- `mise.toml`, `mise.local.toml.example`, `.gitignore` — the project-only setup environment (Python 3.13, `.venv`, required Ghidra and JDK paths, tasks)
 - Outbound, owned elsewhere: program-lifecycle (`GhidraContext` construction, import, analysis, re-analysis, delete, the gate and its wait, program status, locks); analysis-config (per-binary options passed through `GhidraContext`); queries and write-back (via `GhidraTools`)
 
 ## Architecture
@@ -51,9 +52,9 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 | Startup and serving | SRV-013 to SRV-017, SRV-038 | 6 | 0 | 0 |
 | Tool surface | SRV-018 to SRV-024, SRV-037, SRV-039, SRV-044 | 10 | 0 | 0 |
 | Failure reporting | SRV-025, SRV-027, SRV-028, SRV-031, SRV-032, SRV-036, SRV-042 | 7 | 0 | 0 |
-| Packaging and platform | SRV-029, SRV-030, SRV-034, SRV-040, SRV-041 | 5 | 0 | 0 |
+| Packaging and platform | SRV-029, SRV-030, SRV-034, SRV-040, SRV-041, SRV-046 to SRV-049 | 9 | 0 | 0 |
 
-**Summary:** 43 of 43 active specs implemented and covered by tests in `tests/`; 0 gaps. No open questions; 1 item is deferred.
+**Summary:** 47 of 47 active specs implemented and covered by tests in `tests/`; 0 gaps. No open questions; 1 item is deferred.
 
 ## Key Findings
 
