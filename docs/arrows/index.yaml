@@ -80,11 +80,11 @@ arrows:
     parent: null
     sampled: 2026-10-03
     audited: 2026-10-11
-    audited_sha: null
+    audited_sha: 277a045
     blocks: []
     blockedBy: [program-lifecycle, queries, write-back]
     detail: server.md
-    next: "Deferred: search_strings offset (bounded responses goal). audited_sha to be set at commit"
+    next: "Deferred: search_strings offset (bounded responses goal)."
     drift: null
 
   gui-host:
