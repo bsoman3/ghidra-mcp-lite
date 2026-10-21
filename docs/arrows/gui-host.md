@@ -4,7 +4,7 @@ GUI mode (`--gui`): hosting the Ghidra GUI in the server's process, binding to i
 
 ## Status
 
-**OK** — all 31 active specs implemented and covered by tests (2026-10-04), including an on-demand GUI smoke suite run against Ghidra 12.1.4 on macOS; audited at `5cc28ab`.
+**OK** — all 31 active specs implemented and covered by tests (2026-10-04), including an on-demand GUI smoke suite run against Ghidra 12.1.4 on macOS; audited at `5c6bcb3` (2026-10-20).
 
 ## References
 

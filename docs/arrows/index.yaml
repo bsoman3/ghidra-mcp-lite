@@ -1,5 +1,5 @@
 schema_version: 2
-last_updated: 2026-10-03
+last_updated: 2026-10-20
 
 # Lens: behavioral boundary (each segment owns a distinct set of rules/invariants).
 taxonomy:
@@ -19,8 +19,8 @@ arrows:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-04
-    audited_sha: 5cc28ab
+    audited: 2026-10-20
+    audited_sha: 5c6bcb3
     blocks: [program-lifecycle]
     blockedBy: []
     detail: analysis-config.md
@@ -31,8 +31,8 @@ arrows:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-04
-    audited_sha: 5cc28ab
+    audited: 2026-10-20
+    audited_sha: 5c6bcb3
     blocks: [server]
     blockedBy: [analysis-config]
     detail: program-lifecycle.md
@@ -43,8 +43,8 @@ arrows:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-03
-    audited_sha: 7f8909c
+    audited: 2026-10-20
+    audited_sha: 5c6bcb3
     blocks: [queries, write-back]
     blockedBy: []
     detail: resolution.md
@@ -55,8 +55,8 @@ arrows:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-04
-    audited_sha: 5cc28ab
+    audited: 2026-10-20
+    audited_sha: 5c6bcb3
     blocks: [server]
     blockedBy: [resolution]
     detail: queries.md
@@ -67,8 +67,8 @@ arrows:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-04
-    audited_sha: 5cc28ab
+    audited: 2026-10-20
+    audited_sha: 5c6bcb3
     blocks: [server]
     blockedBy: [resolution]
     detail: write-back.md
@@ -79,8 +79,8 @@ arrows:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-11
-    audited_sha: cfbb29f
+    audited: 2026-10-20
+    audited_sha: 5c6bcb3
     blocks: []
     blockedBy: [program-lifecycle, queries, write-back]
     detail: server.md
@@ -91,8 +91,8 @@ arrows:
     status: OK
     parent: null
     sampled: 2026-10-03
-    audited: 2026-10-04
-    audited_sha: 5cc28ab
+    audited: 2026-10-20
+    audited_sha: 5c6bcb3
     blocks: [server]
     blockedBy: [program-lifecycle, write-back, resolution]
     detail: gui-host.md

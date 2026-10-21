@@ -4,7 +4,7 @@ The read side of the server: 22 tools that list, search, decompile, disassemble,
 
 ## Status
 
-**OK** — all 53 active specs implemented and covered by tests (2026-10-20); four items deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; extended for GUI mode and the analysis tools, and audited at `5cc28ab` (2026-10-04).
+**OK** — all 53 active specs implemented and covered by tests (2026-10-20); four items deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; extended for GUI mode and the analysis tools, then for the `list_functions` page cap; audited at `5c6bcb3` (2026-10-20).
 
 ## References
 
