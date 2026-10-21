@@ -15,7 +15,8 @@ Status markers: `[x]` implemented · `[ ]` active gap · `[D]` deferred
 
 - [x] **QRY-001**: When listing functions, the system shall return each function defined in the binary, excluding external and thunk functions, with its namespace-qualified name, entry address, and signature.
 - [x] **QRY-002**: Where a name filter is supplied to the function listing, the system shall return only functions whose qualified name contains the filter case-insensitively.
-- [x] **QRY-003**: When listing functions, the system shall report the total number of matching functions before pagination and return the page selected by offset and limit.
+- [x] **QRY-003**: When listing functions, the system shall report the total number of matching functions before pagination and return the page selected by offset and limit (100 functions by default), which is empty when offset is at or past the total.
+- [x] **QRY-053**: If `list_functions` is called with a limit below 1 or above 500, then the system shall fail the call as `fix_input` with a message saying to page through more results with offset.
 - [x] **QRY-004**: When listing memory segments, the system shall return every memory block with its name, start address, inclusive end address, size, permissions as an `r`/`w`/`x` string (or `-` if none), block type, and initialized flag.
 - [x] **QRY-005**: When listing defined data items, the system shall return each item's label (or its address when it has no label), address, data type name, and string value (empty when it has none), paged by offset and limit, together with the total number of defined data items read successfully.
 - [x] **QRY-006**: When listing classes, the system shall return every class namespace with its qualified name and parent namespace, paged by offset and limit, together with the total number of classes.

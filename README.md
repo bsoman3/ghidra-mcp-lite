@@ -328,7 +328,7 @@ Environment variables: `MCP_TRANSPORT`, `MCP_PORT`, `MCP_HOST`, `GHIDRA_INSTALL_
 
 | Tool | Description |
 |------|-------------|
-| `list_functions` | Functions defined in the binary (excludes external/imported functions and thunks) with addresses and signatures; filterable by name |
+| `list_functions` | Functions defined in the binary (excludes external/imported functions and thunks) with addresses and signatures; filterable by name, up to 500 per page |
 | `list_segments` | Memory segments: name, range, size, r/w/x, type |
 | `list_data_items` | Defined data labels, globals, structs, arrays |
 | `list_classes` | Class namespaces (C++, ObjC) |

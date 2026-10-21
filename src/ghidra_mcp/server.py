@@ -312,7 +312,7 @@ def list_functions(
         binary_name: Name of the binary.
         query: Optional case-insensitive substring to filter function names.
         offset: Number of results to skip (pagination).
-        limit: Maximum number of results to return.
+        limit: Maximum number of results to return (1–500); use offset for more.
     """
     try:
         funcs, total = _tools(ctx, binary_name).list_functions(

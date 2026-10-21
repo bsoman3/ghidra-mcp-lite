@@ -63,6 +63,8 @@ T = typing.TypeVar("T")
 
 # Upper bound on one decompile_function call; a timeout is reported as a decompiler failure.
 DECOMPILE_TIMEOUT_SECONDS = 120
+# Largest page list_functions returns; callers page through more with offset.
+MAX_FUNCTION_PAGE = 500
 MAX_PCODE_OPS = 20000
 MAX_DATAFLOW_OPS = 5000
 SIMILARITY_METHOD = "multiset Jaccard of instruction-mnemonic 3-grams (operands ignored), size-prefiltered"
@@ -509,11 +511,17 @@ class GhidraTools:
     # Navigation / discovery tools
     # -------------------------------------------------------------------------
 
+    # @spec QRY-001, QRY-002, QRY-003, QRY-053
     @handle_exceptions
     def list_functions(
         self, query: str | None = None, offset: int = 0, limit: int = 100
     ) -> tuple[list[FunctionInfo], int]:
         """List all non-external functions, with optional case-insensitive name filter."""
+        if not 1 <= limit <= MAX_FUNCTION_PAGE:
+            raise ValueError(
+                f"limit must be between 1 and {MAX_FUNCTION_PAGE}, not {limit}; "
+                "use offset to page through more results."
+            )
         funcs = self.get_all_functions(include_externals=False)
         results: list[FunctionInfo] = []
         for func in funcs:

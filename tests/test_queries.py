@@ -148,6 +148,44 @@ def test_function_listing_pages_and_reports_the_total(tools):
     assert [f.name for f in functions] == ["helper"] and total == 3
 
 
+def _many_functions(count):
+    return FakeProgram(functions=[Function(f"f{i:04d}", 0x401000 + 0x10 * i, size=0x10) for i in range(count)])
+
+
+# @spec QRY-003
+def test_function_listing_pages_100_by_default_and_is_empty_past_the_end():
+    tools = tools_for(_many_functions(150))
+    functions, total = tools.list_functions()
+    assert len(functions) == 100 and total == 150
+    functions, total = tools.list_functions(offset=150)
+    assert functions == [] and total == 150
+
+
+# @spec QRY-053
+def test_function_listing_accepts_a_page_of_500():
+    functions, total = tools_for(_many_functions(600)).list_functions(limit=500)
+    assert len(functions) == 500 and total == 600
+
+
+# @spec QRY-053
+@pytest.mark.parametrize("limit", [0, -1, 501, 6000])
+def test_a_function_page_outside_1_to_500_is_rejected_pointing_to_offset(tools, limit):
+    with pytest.raises(ValueError, match="offset"):
+        tools.list_functions(limit=limit)
+
+
+# @spec QRY-053
+@pytest.mark.anyio
+async def test_an_oversized_function_page_reaches_the_model_as_fix_input(monkeypatch, program):
+    ctx = FakeContext()
+    ctx.programs = {"prog": tools_for(program).program_info}
+    monkeypatch.setattr(server.mcp, "_ghidra_context", ctx, raising=False)
+    async with Client(server.mcp) as client:
+        result = await client.call_tool("list_functions", {"binary_name": "prog", "limit": 6000})
+    text = "".join(getattr(block, "text", "") for block in result.content)
+    assert result.is_error and "[fix_input]" in text and "offset" in text, text
+
+
 # @spec QRY-004
 def test_segments(tools):
     segments = {s.name: s for s in tools.list_segments()}

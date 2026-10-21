@@ -15,7 +15,7 @@ Principles:
 
 - **Native Ghidra only.** All search uses Ghidra's own iterators and APIs, with no embeddings or vector index (README). This is what keeps the server light enough for a small VM.
 - **Typed, self-describing results.** Every tool returns a model whose field descriptions double as the agent-facing contract. *[inferred]* This gives MCP clients structured output instead of free text.
-- **Bounded where it's cheap to bound.** Most listings and searches take `limit` (and usually `offset`), and `read_bytes` is capped at 8192 bytes. Standardized bounding and ordering is deferred (HLD goal: bounded, stable responses).
+- **Bounded where it's cheap to bound.** Most listings and searches take `limit` (and usually `offset`). `list_functions` returns at most 500 functions per page and `read_bytes` at most 8192 bytes; larger requests fail as `fix_input`. Standardized bounding and ordering is deferred (HLD goal: bounded, stable responses).
 - **Say what was resolved; mark what failed** (HLD tenets *Never guess for the caller*, *Explicit over silent*). A read whose target was resolved from a loose match states the resolution. A read that partly fails returns what succeeded, with each failed item marked (see Disclosure and Partial Results).
 
 The MCP wrappers (parameter defaults, error mapping, tool descriptions) belong to server. Name and address resolution belongs to resolution. The per-program decompiler instance belongs to program-lifecycle.
@@ -26,7 +26,7 @@ This catalogue covers the 22 read-only binary tools owned by queries. The full t
 
 | MCP tool | Implementation | Target resolution | Result model | Paging |
 |---|---|---|---|---|
-| `list_functions` | `list_functions` | n/a | `FunctionList` | offset/limit, total |
+| `list_functions` | `list_functions` | n/a | `FunctionList` | offset/limit (1–500), total |
 | `list_segments` | `list_segments` | n/a | `MemorySegments` | none |
 | `list_data_items` | `list_data_items` | n/a | `DataItems` | offset/limit, total |
 | `list_classes` | `list_classes` | n/a | `NamespaceList` | offset/limit, total |
@@ -51,7 +51,7 @@ This catalogue covers the 22 read-only binary tools owned by queries. The full t
 
 ## Listings
 
-- **Functions** — `get_all_functions(include_externals=False)`, which excludes external and thunk functions. An optional case-insensitive substring filter applies to the namespace-qualified name. Each entry carries the qualified name, entry address, `str(signature)`, and `external` (always false here). The list is fully materialized, then `total` is taken and the slice applied.
+- **Functions** — `get_all_functions(include_externals=False)`, which excludes external and thunk functions. An optional case-insensitive substring filter applies to the namespace-qualified name. Each entry carries the qualified name, entry address, `str(signature)`, and `external` (always false here). The list is fully materialized, then `total` is taken and the slice applied. A page holds 100 functions by default and at most 500: a `limit` outside 1–500 raises `ValueError` saying to page with `offset`, so it fails as `fix_input`. An `offset` at or past `total` returns an empty page with the real `total`, which tells the caller it has reached the end.
 - **Segments** — one entry per memory block: name, start, inclusive end, size, permissions (`r`, `w`, `x` concatenated in that order, or `-` if none), block type, initialized flag.
 - **Data items** — `listing.getDefinedData(True)`. The label falls back to the address string, the value to `str(getValue())` or `""`, and the type to the data type's name. The loop streams, collecting items after `offset` until `limit`. `total` counts every item read successfully; an item that raises is reported in `failures` (see Partial Results).
 - **Classes** — non-dynamic symbols whose symbol type is `Class`: qualified name and parent namespace.
@@ -111,7 +111,7 @@ This catalogue covers the 22 read-only binary tools owned by queries. The full t
 
 | Tool | `offset` | `limit` default (tool layer / server) | `total` | Where the slice happens |
 |---|---|---|---|---|
-| `list_functions` | yes | 100 / 100 | yes | after the full list is built |
+| `list_functions` | yes | 100 / 100, at most 500 | yes | after the full list is built |
 | `list_data_items` | yes | 100 / 100 | yes | while streaming |
 | `list_classes`, `list_namespaces` | yes | 100 / 100 | yes | after the full list is built |
 | `search_symbols` | yes | 100 / 100 | no | after reference counts for all matches |
@@ -119,7 +119,7 @@ This catalogue covers the 22 read-only binary tools owned by queries. The full t
 | `search_strings` | **no** | 100 / 100 | yes (all matches) | while streaming |
 | `list_segments`, `list_cross_references`, `get_xrefs_from`, `disassemble_function` | no | n/a | n/a | not paginated |
 
-No tool validates negative `offset` or `limit`.
+`list_functions` rejects a `limit` outside 1–500. No other tool validates `limit`, and no tool validates a negative `offset`.
 
 ## Response Models
 
@@ -144,6 +144,7 @@ Defined in `models.py` (except `ProgramInfo`/`ProgramInfos`, owned by server). F
 | String search | Case-insensitive substring over defined strings, with total match count | Regex; fuzzy matching | Simple and predictable for agents. |
 | Import/export filtering | Case-insensitive regex | Substring, like the other tools | *[inferred]* Patterns like `mem.*`. |
 | `list_functions` scope | Exclude externals and thunks, and document it | Include them | A listing of the binary's own code; imports have their own tool. |
+| `list_functions` page size | At most 500 functions per page; a `limit` outside 1–500 fails as `fix_input`, saying to page with `offset` | No cap; clamp a larger `limit` to 500 | Programs hold thousands of functions (Go binaries over 5,000), and one uncapped call floods an agent's context. Failing explicitly follows *Explicit over silent*: a clamped page looks complete unless the caller checks `total`. 500 keeps a page within an agent's context while a full listing takes a handful of calls. |
 | Decompiler | The program's shared `DecompInterface`, under the per-program lock; timeout 120 s | A decompiler per call; no timeout | Amortizes decompiler startup. A bound turns a hang into an explicit `stop`; 120 s allows large functions. |
 | `get_xrefs_from` `function_name` | Report the function containing each reference's **target**, and document that meaning | Report the source function | The source function is the same for every reference from one address, so the target's function is the informative value. |
 | Regex filters | Accept the risk of pathological patterns | Guard with a timeout or length limit | Authentication is out of scope, so callers are trusted. Python's `re` has no timeout, and a guard adds complexity for little gain. |
@@ -180,7 +181,7 @@ Defined in `models.py` (except `ProgramInfo`/`ProgramInfos`, owned by server). F
 12. ✅ **`get_xrefs_from` `function_name`.** Behavior kept (the target's function); the field and tool descriptions say so. (2026-10-03)
 
 ### Deferred
-1. **Pagination contract.** `total` is returned for some tools but not others, `search_strings` has no `offset`, and negative `offset`/`limit` values are not validated. Part of the HLD's bounded, stable responses goal.
+1. **Pagination contract.** `total` is returned for some tools but not others, `search_strings` has no `offset`, `limit` is capped only for `list_functions`, and negative `offset` values are not validated. Part of the HLD's bounded, stable responses goal.
 2. **Unbounded outputs.** `list_cross_references`, `get_xrefs_from`, and `disassemble_function` return everything. Part of the same goal.
 3. **`search_symbols` cost and shape.** Reference counts are computed for every match before pagination, there is no `total`, and the order is discovery order. Part of the same goal.
 4. **Full scans per call.** Strings, data items, and symbols are scanned in full on every call. Part of the same goal.

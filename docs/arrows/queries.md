@@ -4,7 +4,7 @@ The read side of the server: 22 tools that list, search, decompile, disassemble,
 
 ## Status
 
-**OK** — all 52 active specs implemented and covered by tests (2026-10-04); four items deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; extended for GUI mode and the analysis tools, and audited at `5cc28ab` (2026-10-04).
+**OK** — all 53 active specs implemented and covered by tests (2026-10-20); four items deferred. Mapped 2026-10-03 from git SHA `1acf6ba`; extended for GUI mode and the analysis tools, and audited at `5cc28ab` (2026-10-04).
 
 ## References
 
@@ -15,7 +15,7 @@ The read side of the server: 22 tools that list, search, decompile, disassemble,
 - docs/intent/queries/queries-design.md
 
 ### EARS
-- docs/intent/queries/queries-specs.md (52 specs, prefix `QRY-*`)
+- docs/intent/queries/queries-specs.md (53 specs, prefix `QRY-*`)
 
 ### Tests
 - `tests/test_queries.py` — every read tool against an in-memory program (`tests/program_fakes.py`), with stubbed Ghidra classes and `ghidrecomp`
@@ -44,7 +44,7 @@ The read side of the server: 22 tools that list, search, decompile, disassemble,
 
 | Category | Spec IDs | Implemented | Deferred | Gaps |
 |----------|----------|-------------|----------|------|
-| Listings | QRY-001 to QRY-009, QRY-031 | 10 | 0 | 0 |
+| Listings | QRY-001 to QRY-009, QRY-031, QRY-053 | 11 | 0 | 0 |
 | Searches | QRY-010 to QRY-013, QRY-032 | 5 | 0 | 0 |
 | Code views | QRY-014 to QRY-020, QRY-030, QRY-033 to QRY-035, QRY-037, QRY-038 | 13 | 0 | 0 |
 | References | QRY-021 to QRY-026, QRY-036 | 7 | 0 | 0 |
@@ -54,7 +54,7 @@ The read side of the server: 22 tools that list, search, decompile, disassemble,
 | P-code and data flow | QRY-048 to QRY-051 | 4 | 0 | 0 |
 | Query contract | QRY-027 to QRY-028 | 2 | 0 | 0 |
 
-**Summary:** 52 of 52 active specs implemented, all with tests; 0 gaps. No open questions; 4 items are deferred.
+**Summary:** 53 of 53 active specs implemented, all with tests; 0 gaps. No open questions; 4 items are deferred.
 
 ## Key Findings
 
