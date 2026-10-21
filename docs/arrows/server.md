@@ -21,6 +21,7 @@ Starts the server and presents the tools to MCP clients: the `ghidra-mcp` CLI (o
 - `tests/test_server.py` — failure reporting, tool surface, CLI (unit, with fakes)
 - `tests/test_errors.py` — recovery categories and classification
 - `tests/test_packaging.py` — package metadata, README prerequisites and CLI reference
+- `tests/conftest.py` — gates the suites behind the `test:integration` and `test:gui` tasks (SRV-047): skips `integration` tests without `GHIDRA_INSTALL_DIR` and `gui` tests without `GHIDRA_MCP_GUI_TESTS=1`; provides the `anyio` backend
 - `tests/integration/test_ghidra_smoke.py` — `--analyze-only`, tool calls on SDK worker threads, end-to-end `fix_input`, `import_binary` with analysis options, `reanalyze_binary` (needs `GHIDRA_INSTALL_DIR`)
 
 ### Code
